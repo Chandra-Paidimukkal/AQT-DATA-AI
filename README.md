@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# Welcome to AQT INTELLIGENT DATA EXTRACTION
 
-TODO: Document your project here
+Transform unstructured documents into structured data with AI-powered extraction, multi-engine processing, and enterprise-grade reliability.
