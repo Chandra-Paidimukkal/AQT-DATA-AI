@@ -13,7 +13,7 @@ export default function DashboardPage() {
       try {
         const res = await api.dashboardSummary();
         setSummary(res.data || res);
-      } catch {} finally { setLoading(false); }
+      } catch { } finally { setLoading(false); }
     };
     load();
   }, []);
@@ -87,11 +87,10 @@ export default function DashboardPage() {
                       <p className="text-sm text-foreground truncate">{job.filename || job.job_id}</p>
                       <span className="text-[10px] font-mono text-muted-foreground">{job.engine}</span>
                     </div>
-                    <span className={`text-[10px] px-2 py-0.5 rounded font-mono border ${
-                      job.status === "completed" || job.status === "success"
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-mono border ${job.status === "completed" || job.status === "success"
                         ? "bg-glow-success/8 text-glow-success border-glow-success/15"
                         : "bg-secondary text-muted-foreground border-border"
-                    }`}>{job.status}</span>
+                      }`}>{job.status}</span>
                   </div>
                 ))
               )}

@@ -194,8 +194,8 @@ export default function UploadExtractPage() {
               onClick={() => !locked && store.setStep(i)}
               disabled={locked}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-[11px] font-medium tracking-wide transition-all whitespace-nowrap ${active ? "text-primary" :
-                  done ? "text-emerald-400 cursor-pointer" :
-                    "text-muted-foreground/50 cursor-not-allowed"
+                done ? "text-emerald-400 cursor-pointer" :
+                  "text-muted-foreground/50 cursor-not-allowed"
                 }`}
               style={active ? {
                 background: "hsl(185 72% 44% / 0.08)",
@@ -270,8 +270,8 @@ export default function UploadExtractPage() {
                 ] as const).map(tab => (
                   <button key={tab.id} onClick={() => setActiveUploadTab(tab.id)}
                     className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeUploadTab === tab.id
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
                       }`}>
                     <tab.icon className="w-3.5 h-3.5" />
                     {tab.label}
@@ -348,8 +348,8 @@ export default function UploadExtractPage() {
                         initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.04 }}
                         onClick={() => store.setSelectedDoc(doc.document_id)}
                         className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all ${store.selectedDocId === doc.document_id
-                            ? "glow-primary"
-                            : "hover:border-primary/15"
+                          ? "glow-primary"
+                          : "hover:border-primary/15"
                           }`}
                         style={{
                           background: "hsl(220 40% 7%)",

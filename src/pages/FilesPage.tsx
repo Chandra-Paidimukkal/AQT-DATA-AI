@@ -37,7 +37,7 @@ export default function FilesPage() {
         const res = await fn();
         const data = res.data || res;
         setter(Array.isArray(data) ? data : []);
-      } catch {} finally {
+      } catch { } finally {
         setLoading((prev) => ({ ...prev, [key]: false }));
       }
     };
@@ -99,8 +99,8 @@ export default function FilesPage() {
     try {
       const saver =
         viewingFile.section === "Schema Files" ? api.saveSchemaFile :
-        viewingFile.section === "Result Files" ? api.saveResultFile :
-        api.saveExportFile;
+          viewingFile.section === "Result Files" ? api.saveResultFile :
+            api.saveExportFile;
       await saver(viewingFile.name, editedContent);
       setFileContent(editedContent);
       setHasChanges(false);

@@ -28,7 +28,7 @@ export default function SessionsPage() {
     try {
       const res = await api.listSessions();
       setSessions(res.data?.items || res.data || []);
-    } catch {} finally { setLoading(false); }
+    } catch { } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchSessions(); }, []);
@@ -128,9 +128,8 @@ export default function SessionsPage() {
                   <div className="grid grid-cols-4 gap-2">
                     {MODES.map(m => (
                       <button key={m.id} onClick={() => setForm(f => ({ ...f, mode: m.id }))}
-                        className={`px-3 py-2 rounded-lg text-xs font-medium transition-all ${
-                          form.mode === m.id ? "bg-primary/8 text-primary border border-primary/20" : "bg-secondary/30 text-muted-foreground border border-border hover:border-primary/15"
-                        }`}>
+                        className={`px-3 py-2 rounded-lg text-xs font-medium transition-all ${form.mode === m.id ? "bg-primary/8 text-primary border border-primary/20" : "bg-secondary/30 text-muted-foreground border border-border hover:border-primary/15"
+                          }`}>
                         {m.label}
                       </button>
                     ))}
@@ -144,9 +143,8 @@ export default function SessionsPage() {
                       <div className="flex flex-wrap gap-2">
                         {PROVIDERS.map(p => (
                           <button key={p} onClick={() => setForm(f => ({ ...f, provider: p }))}
-                            className={`px-3 py-2 rounded-lg text-xs font-medium capitalize transition-all ${
-                              form.provider === p ? "bg-accent/8 text-accent border border-accent/20" : "bg-secondary/30 text-muted-foreground border border-border hover:border-accent/15"
-                            }`}>
+                            className={`px-3 py-2 rounded-lg text-xs font-medium capitalize transition-all ${form.provider === p ? "bg-accent/8 text-accent border border-accent/20" : "bg-secondary/30 text-muted-foreground border border-border hover:border-accent/15"
+                              }`}>
                             {p}
                           </button>
                         ))}

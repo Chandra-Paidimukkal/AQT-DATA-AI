@@ -50,7 +50,7 @@ export default function Navbar() {
             <span className="font-display font-bold text-[13px] tracking-wide text-foreground group-hover:text-primary transition-colors">
               AQT
             </span>
-            <span className="text-[8px] font-mono tracking-[0.2em] text-primary/50 uppercase">Nexus</span>
+            <span className="text-[8px] font-mono tracking-[0.2em] text-primary/50 uppercase">dATA</span>
           </div>
         </Link>
 

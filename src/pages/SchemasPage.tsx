@@ -20,7 +20,7 @@ export default function SchemasPage() {
     try {
       const res = await api.listSchemas();
       setSchemas(res.data?.items || res.data || []);
-    } catch {} finally { setLoading(false); }
+    } catch { } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchSchemas(); }, []);
@@ -133,7 +133,7 @@ export default function SchemasPage() {
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="text-xs text-muted-foreground">Schema Definition (JSON)</label>
-                    <button onClick={() => { try { setNewDef(JSON.stringify(JSON.parse(newDef), null, 2)); } catch {} }}
+                    <button onClick={() => { try { setNewDef(JSON.stringify(JSON.parse(newDef), null, 2)); } catch { } }}
                       className="text-[10px] text-primary hover:underline">Format</button>
                   </div>
                   <textarea value={newDef} onChange={e => { setNewDef(e.target.value); setJsonError(""); }} rows={8}
