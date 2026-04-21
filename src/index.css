@@ -93,7 +93,7 @@
   }
 
   .surface {
-    background: hsl(220 40% 7%);
+    background: hsl(182, 93%, 49%);
     border: 1px solid hsl(var(--glass-border));
     border-radius: 0.75rem;
   }

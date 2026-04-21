@@ -14,6 +14,7 @@ import SessionsPage from "./pages/SessionsPage";
 import AliasesPage from "./pages/AliasesPage";
 import FilesPage from "./pages/FilesPage";
 import ArchitecturePage from "./pages/ArchitecturePage";
+import DatabasePage from "./pages/DatabasePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -30,6 +31,7 @@ const App = () => (
             <Route path="/" element={<HomePage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/upload" element={<UploadExtractPage />} />
+            <Route path="/database" element={<DatabasePage />} />
             <Route path="/jobs" element={<JobsPage />} />
             <Route path="/schemas" element={<SchemasPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
