@@ -1,0 +1,387 @@
+{
+    "manufacturer": {
+        "type": "string",
+        "description": "Official manufacturer or brand name of the equipment as explicitly mentioned in the document. Extract exact manufacturer name from title block, header, product literature, or specification section.",
+        "aliases": [
+            "brand",
+            "make",
+            "manufacturer name",
+            "mfg",
+            "company"
+        ],
+        "source_hint": [
+            "header",
+            "title",
+            "text",
+            "table"
+        ]
+    },
+    "model_number": {
+        "type": "string",
+        "description": "Exact model number of the equipment. Extract full model code without changing characters, hyphens, or prefixes. If multiple model numbers are present, extract the primary model for the current record or use row-wise extraction for table data.",
+        "aliases": [
+            "model",
+            "model no",
+            "model #",
+            "unit model",
+            "model number"
+        ],
+        "source_hint": [
+            "table",
+            "header",
+            "text"
+        ]
+    },
+    "equipment_type_l2": {
+        "type": "string",
+        "enum": [
+            "Ovens",
+            "Ranges",
+            "Fryers",
+            "Grills",
+            "Charbroilers",
+            "Steamers",
+            "Dishwashers",
+            "Heating_and_storage",
+            "Prep_table"
+        ],
+        "description": "Main equipment category (L2). Classify the product into one of the approved L2 categories only. Do not invent new values."
+    },
+    "equipment_sub_type_l3": {
+        "type": "string",
+        "enum": [
+            "Convection Ovens",
+            "Combination Ovens",
+            "Microwave Ovens",
+            "Bakery Deck Ovens",
+            "Rapid Cook",
+            "Cook and Hold Ovens and Cabinets",
+            "Custom / specialty",
+            "Conveyor",
+            "Range w/ standard oven",
+            "Range w/ no oven",
+            "Range w/ convection oven",
+            "Range w/ storage base",
+            "Range w/ griddle",
+            "Portable",
+            "Drop in",
+            "Floor",
+            "Countertop",
+            "Split-pot",
+            "Drop-in",
+            "Standard",
+            "Medium duty",
+            "Heavy duty",
+            "Induction",
+            "Modular",
+            "Convection",
+            "Kettle",
+            "Single & double rack",
+            "Under counter",
+            "Glass washer",
+            "Pot and pan",
+            "Holding & proofing cabinets",
+            "Steam tables & food wells",
+            "Strip warmers",
+            "Drawer warmers",
+            "Multi-section",
+            "Single-section"
+        ],
+        "description": "Specific equipment sub-category (L3). Choose only from the approved L3 list and ensure it logically matches the selected L2 category."
+    },
+    "product_description_mfg": {
+        "type": "string",
+        "description": "Manufacturer product description exactly or closely as written in the literature. Usually found in title, subtitle, overview text, or specification summary. Capture the descriptive product name, not marketing slogan only.",
+        "aliases": [
+            "product description",
+            "description",
+            "product name",
+            "series description"
+        ],
+        "source_hint": [
+            "header",
+            "title",
+            "text"
+        ]
+    },
+    "product_literature_date_yr": {
+        "type": "number",
+        "description": "Publication year of the manufacturer literature. Extract only the year in YYYY format. If a full date is present, convert it to year only.",
+        "aliases": [
+            "literature date",
+            "publication year",
+            "document year",
+            "revision date",
+            "copyright year"
+        ],
+        "source_hint": [
+            "footer",
+            "header",
+            "text"
+        ]
+    },
+    "product_line_mfg": {
+        "type": "string",
+        "description": "Manufacturer product line, series, family, or range name associated with the equipment. Extract exact line or family name when explicitly stated.",
+        "aliases": [
+            "series",
+            "product line",
+            "family",
+            "line"
+        ],
+        "source_hint": [
+            "header",
+            "title",
+            "text",
+            "table"
+        ]
+    },
+    "nema_config": {
+        "type": "string",
+        "description": "Electrical plug or receptacle configuration in NEMA format, such as NEMA 5-15P or NEMA 6-20P. Extract only if explicitly stated.",
+        "aliases": [
+            "nema",
+            "plug type",
+            "plug configuration",
+            "receptacle",
+            "electrical plug"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "cord_length_total_ft": {
+        "type": "number",
+        "description": "Total power cord length in feet. Extract numeric value only. Convert inches to feet when clearly stated and use decimal if needed.",
+        "aliases": [
+            "cord length",
+            "power cord length",
+            "electrical cord length"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "shipping_weight_lbs": {
+        "type": "number",
+        "description": "Shipping weight of the equipment in pounds. Extract numeric value only. Convert to pounds if another unit is explicitly given.",
+        "aliases": [
+            "shipping weight",
+            "ship weight",
+            "approximate shipping weight",
+            "weight lbs"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "installed_weight_lbs": {
+        "type": "number",
+        "description": "Installed, operating, or net weight of the equipment in pounds. Extract numeric value only. Convert to pounds if another unit is explicitly given.",
+        "aliases": [
+            "installed weight",
+            "operating weight",
+            "net weight",
+            "unit weight"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "length_in": {
+        "type": "number",
+        "description": "Overall equipment length in inches. First scrape from table. If no table value is found, scrape from diagram, dimensional drawing, or annotated image. Convert mm to inches when clearly given. Extract numeric value only.",
+        "aliases": [
+            "length",
+            "overall length",
+            "depth",
+            "l",
+            "length in"
+        ],
+        "source_hint": [
+            "table",
+            "diagram",
+            "drawing",
+            "text"
+        ]
+    },
+    "width_in": {
+        "type": "number",
+        "description": "Overall equipment width in inches. First scrape from table. If no table value is found, scrape from diagram, dimensional drawing, or annotated image. Convert mm to inches when clearly given. Extract numeric value only.",
+        "aliases": [
+            "width",
+            "overall width",
+            "w",
+            "width in"
+        ],
+        "source_hint": [
+            "table",
+            "diagram",
+            "drawing",
+            "text"
+        ]
+    },
+    "height_in": {
+        "type": "number",
+        "description": "Overall equipment height in inches. First scrape from table. If no table value is found, scrape from diagram, dimensional drawing, or annotated image. Convert mm to inches when clearly given. Extract numeric value only. If multiple heights are present such as single stack or double stack, choose the standard single-unit height unless schema or context requires otherwise.",
+        "aliases": [
+            "height",
+            "overall height",
+            "h",
+            "height in"
+        ],
+        "source_hint": [
+            "table",
+            "diagram",
+            "drawing",
+            "text"
+        ]
+    },
+    "production_capacity": {
+        "type": "number",
+        "description": "Numeric production capacity value of the equipment, such as number of trays, racks, meals, pounds, or pieces per hour. Extract numeric part only.",
+        "aliases": [
+            "production capacity",
+            "capacity",
+            "output capacity",
+            "throughput"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "production_capacity_uom": {
+        "type": "string",
+        "description": "Unit of measure for production capacity, such as racks/hr, meals/hr, lbs/hr, trays, pans, or pieces/hr. Extract exact unit text associated with production capacity.",
+        "aliases": [
+            "capacity uom",
+            "production uom",
+            "throughput unit"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "capacity_vol": {
+        "type": "number",
+        "description": "Volumetric capacity numeric value, such as 5, 10, or 20. Extract numeric part only.",
+        "aliases": [
+            "volume capacity",
+            "capacity",
+            "capacity volume",
+            "tank capacity"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "capacity_uom": {
+        "type": "string",
+        "description": "Unit of measure for volumetric capacity, such as gal, qt, liter, ltr, cu ft, or oz. Extract exact unit text associated with volumetric capacity.",
+        "aliases": [
+            "capacity unit",
+            "volume uom",
+            "vol uom"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "power_supply_configuration_volts_hertz_phase": {
+        "type": "string",
+        "description": "Complete electrical power supply configuration in the format Volts/Hertz/Phase, such as 208/60/1 or 208-240/60/3. Extract exact electrical configuration as stated.",
+        "aliases": [
+            "power supply",
+            "electrical",
+            "voltage",
+            "electrical requirements",
+            "volts hertz phase"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "min_circuit_amps_mca": {
+        "type": "number",
+        "description": "Minimum Circuit Amps (MCA) numeric value. Extract only when explicitly stated. If multiple circuits exist, capture the value relevant to the current model or main circuit.",
+        "aliases": [
+            "mca",
+            "minimum circuit amps",
+            "minimum circuit ampacity",
+            "min circuit amps"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "max_over_current_protection_mop": {
+        "type": "number",
+        "description": "Maximum Over-current Protection (MOP / MOCP) numeric value. Extract only when explicitly stated. If multiple circuits exist, capture the value relevant to the current model or main circuit.",
+        "aliases": [
+            "mop",
+            "mocp",
+            "max over current protection",
+            "maximum overcurrent protection",
+            "max fuse",
+            "max breaker"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "heat_type": {
+        "type": "string",
+        "enum": [
+            "Biomass",
+            "Dual fuel",
+            "Electric",
+            "Gas",
+            "Heatpump",
+            "Hot water",
+            "Oil",
+            "Propane",
+            "Solid fuel",
+            "Steam"
+        ],
+        "description": "Type of heating source or heating medium used by the equipment. Choose only from the approved list."
+    },
+    "nominal_output_heating_gas_mbh": {
+        "type": "number",
+        "description": "Nominal gas heating output in MBH. Extract numeric value only when explicitly stated. Do not confuse with input unless output is clearly indicated.",
+        "aliases": [
+            "nominal output heating gas",
+            "gas output",
+            "heating output gas",
+            "output mbh"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    },
+    "nominal_output_heating_elec_kw": {
+        "type": "number",
+        "description": "Nominal electric heating output in kW. Extract numeric value only when explicitly stated.",
+        "aliases": [
+            "nominal output heating elec",
+            "electric output",
+            "heating output kw",
+            "output kw"
+        ],
+        "source_hint": [
+            "table",
+            "text"
+        ]
+    }
+}
