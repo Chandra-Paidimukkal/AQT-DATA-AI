@@ -2,7 +2,6 @@ import { create } from "zustand";
 
 export type ExtractionMode = "auto" | "python" | "ai" | "hybrid";
 export type SchemaSource = "upload" | "paste" | "existing" | "skip";
-export type ParseStatus = "idle" | "parsing" | "done" | "error";
 
 export interface UploadedDoc {
   document_id: string;
@@ -21,34 +20,32 @@ export interface ProviderConfig {
 
 export interface WorkflowState {
   currentStep: number;
+
   uploadedDocs: UploadedDoc[];
   selectedDocId: string;
-  parseStatuses: Record<string, ParseStatus>;
-  parseResults: Record<string, any>;
-  parseErrors: Record<string, string>;
   parsedContent: any | null;
+  parsedForDocId: string;            // which doc the parsedContent belongs to
+  parsedCache: Record<string, any>;  // per-doc cache: docId → parsed data
+
   schemaSource: SchemaSource;
   schemaId: string;
   schemaDefinition: Record<string, any> | null;
   schemaName: string;
   schemaValid: boolean;
+
   sessionMode: ExtractionMode;
   sessionProvider: string;
   providerConfig: ProviderConfig;
   sessionId: string;
   sessionCreated: boolean;
+
   extractionResult: any | null;
   extracting: boolean;
-  batchExtractionResults: Record<string, any>;
-  batchExtracting: boolean;
-  batchProgress: { done: number; total: number };
 
   setStep: (step: number) => void;
   addUploadedDocs: (docs: UploadedDoc[]) => void;
   setSelectedDoc: (id: string) => void;
-  setParsedContent: (content: any) => void;
-  setParseStatus: (docId: string, status: ParseStatus, result?: any, error?: string) => void;
-  clearParseStates: () => void;
+  setParsedContent: (content: any, docId: string) => void;
   setSchemaSource: (source: SchemaSource) => void;
   setSchemaId: (id: string) => void;
   setSchemaDefinition: (def: Record<string, any> | null) => void;
@@ -61,20 +58,16 @@ export interface WorkflowState {
   setSessionCreated: (created: boolean) => void;
   setExtractionResult: (result: any) => void;
   setExtracting: (extracting: boolean) => void;
-  setBatchExtractionResult: (docId: string, result: any) => void;
-  setBatchExtracting: (val: boolean) => void;
-  setBatchProgress: (progress: { done: number; total: number }) => void;
   resetWorkflow: () => void;
 }
 
 const initialState = {
   currentStep: 0,
-  uploadedDocs: [] as UploadedDoc[],
+  uploadedDocs: [],
   selectedDocId: "",
-  parseStatuses: {} as Record<string, ParseStatus>,
-  parseResults: {} as Record<string, any>,
-  parseErrors: {} as Record<string, string>,
   parsedContent: null,
+  parsedForDocId: "",
+  parsedCache: {},
   schemaSource: "skip" as SchemaSource,
   schemaId: "",
   schemaDefinition: null,
@@ -82,37 +75,39 @@ const initialState = {
   schemaValid: false,
   sessionMode: "auto" as ExtractionMode,
   sessionProvider: "groq",
-  providerConfig: {} as ProviderConfig,
+  providerConfig: {},
   sessionId: "",
   sessionCreated: false,
   extractionResult: null,
   extracting: false,
-  batchExtractionResults: {} as Record<string, any>,
-  batchExtracting: false,
-  batchProgress: { done: 0, total: 0 },
 };
 
 export const useWorkflowStore = create<WorkflowState>((set) => ({
   ...initialState,
+
   setStep: (step) => set({ currentStep: step }),
+
   addUploadedDocs: (docs) =>
     set((s) => ({ uploadedDocs: [...s.uploadedDocs, ...docs] })),
-  setSelectedDoc: (id) => set({ selectedDocId: id }),
-  setParsedContent: (content) => set({ parsedContent: content }),
 
-  setParseStatus: (docId, status, result, error) =>
+  // BUG FIX: When selecting a different doc, restore its cached parse result
+  // (or clear parsedContent if it hasn't been parsed yet). This prevents
+  // doc A's parsed content from showing when doc B is selected.
+  setSelectedDoc: (id) =>
     set((s) => ({
-      parseStatuses: { ...s.parseStatuses, [docId]: status },
-      parseResults:
-        result !== undefined ? { ...s.parseResults, [docId]: result } : s.parseResults,
-      parseErrors:
-        error !== undefined ? { ...s.parseErrors, [docId]: error } : s.parseErrors,
-      parsedContent:
-        result !== undefined && docId === s.selectedDocId ? result : s.parsedContent,
+      selectedDocId: id,
+      parsedContent: s.parsedCache[id] ?? null,
+      parsedForDocId: s.parsedCache[id] ? id : "",
     })),
 
-  clearParseStates: () =>
-    set({ parseStatuses: {}, parseResults: {}, parseErrors: {} }),
+  // BUG FIX: setParsedContent now requires docId so we know which doc it belongs to
+  // and can cache it per-doc.
+  setParsedContent: (content, docId) =>
+    set((s) => ({
+      parsedContent: content,
+      parsedForDocId: docId,
+      parsedCache: { ...s.parsedCache, [docId]: content },
+    })),
 
   setSchemaSource: (source) => set({ schemaSource: source }),
   setSchemaId: (id) => set({ schemaId: id }),
@@ -125,12 +120,6 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   setSessionId: (id) => set({ sessionId: id }),
   setSessionCreated: (created) => set({ sessionCreated: created }),
   setExtractionResult: (result) => set({ extractionResult: result }),
-  setExtracting: (extracting) => set({ extracting }),
-  setBatchExtractionResult: (docId, result) =>
-    set((s) => ({
-      batchExtractionResults: { ...s.batchExtractionResults, [docId]: result },
-    })),
-  setBatchExtracting: (val) => set({ batchExtracting: val }),
-  setBatchProgress: (progress) => set({ batchProgress: progress }),
+  setExtracting: (extracting) => set({ extracting: extracting }),
   resetWorkflow: () => set(initialState),
 }));
