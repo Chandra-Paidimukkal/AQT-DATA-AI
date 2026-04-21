@@ -1,55 +1,265 @@
+// ─────────────────────────────────────────────────────────────
+//  UploadExtractPage.tsx  ─ UPGRADED v3
+//  • Parse ALL docs simultaneously
+//  • Split-pane viewer per PDF (like image reference):
+//    Left = raw document text  |  Right = structured table
+//  • Markdown / JSON tab toggle on right pane
+//  • Extract ALL via /run-batch
+//  • Combined export (JSON + CSV)
+// ─────────────────────────────────────────────────────────────
+
 import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/services/api";
 import { useWorkflowStore, ExtractionMode, SchemaSource } from "@/stores/workflowStore";
-import { GlassCard, HUDFrame } from "@/components/shared";
+import { HUDFrame } from "@/components/shared";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Upload, FileUp, FolderArchive, FileSearch, Cpu, Zap, Download,
-  CheckCircle2, Loader2, Eye, EyeOff, Database, Settings, ArrowRight,
-  RotateCcw, ChevronDown, AlertCircle, FileText, Code, List, SkipForward, X,
+  Upload, FileUp, Cpu, Zap, Download, CheckCircle2, Loader2,
+  Database, Settings, ArrowRight, RotateCcw, AlertCircle, FileText,
+  Code, List, SkipForward, ChevronDown, File, Files, FileArchive,
+  X, PlayCircle, ChevronLeft, ChevronRight,
 } from "lucide-react";
 
-const STEPS = ["Upload", "Schema", "Session", "Extraction", "Results"];
+type ParseStatus = "idle" | "parsing" | "done" | "error";
 
+const STEPS = ["Upload", "Schema", "Session", "Extract", "Results"];
 const MODES: { id: ExtractionMode; label: string; icon: any; desc: string }[] = [
-  { id: "auto", label: "Auto", icon: Zap, desc: "Auto-select best engine" },
-  { id: "python", label: "Python", icon: Cpu, desc: "Python-based extraction" },
-  { id: "ai", label: "AI", icon: Database, desc: "AI model extraction" },
-  { id: "hybrid", label: "Hybrid", icon: Settings, desc: "Combined approach" },
+  { id: "auto", label: "Auto", icon: Zap, desc: "Best engine automatically" },
+  { id: "python", label: "Python", icon: Cpu, desc: "Rule-based extraction" },
+  { id: "ai", label: "AI", icon: Database, desc: "LLM-powered extraction" },
+  { id: "hybrid", label: "Hybrid", icon: Settings, desc: "AI + Python combined" },
 ];
-
 const PROVIDERS = ["groq", "openai", "gemini", "landingai", "ollama"];
 
+// ── Parse status badge ────────────────────────────────────────
+function ParseBadge({ status }: { status: ParseStatus }) {
+  if (status === "idle") return null;
+  const cfg = {
+    parsing: { label: "Parsing…", cls: "text-blue-400 bg-blue-900/20 border-blue-700/30", Icon: Loader2, spin: true },
+    done: { label: "Parsed", cls: "text-emerald-400 bg-emerald-900/20 border-emerald-700/30", Icon: CheckCircle2, spin: false },
+    error: { label: "Error", cls: "text-red-400 bg-red-900/20 border-red-700/30", Icon: AlertCircle, spin: false },
+  }[status];
+  return (
+    <span className={`inline-flex items-center gap-1 border rounded-full px-2 py-0.5 text-[9px] font-mono ${cfg.cls}`}>
+      <cfg.Icon className={`w-2.5 h-2.5 ${cfg.spin ? "animate-spin" : ""}`} />
+      {cfg.label}
+    </span>
+  );
+}
+
+// ── Split-pane document viewer (matches image 2) ──────────────
+function DocSplitViewer({
+  doc, parsed, onClose,
+}: {
+  doc: { filename: string; document_id: string };
+  parsed: any;
+  onClose: () => void;
+}) {
+  const [rightTab, setRightTab] = useState<"markdown" | "json">("markdown");
+  const [tableIdx, setTableIdx] = useState(0);
+
+  const text = parsed?.document_text || "";
+  const tables = parsed?.tables || [];
+  const meta = parsed?.metadata || {};
+
+  // Build flat key-value rows from first table or metadata
+  const tableRows: { key: string; value: string }[] = [];
+  if (tables.length > 0 && Array.isArray(tables[tableIdx])) {
+    const tbl = tables[tableIdx];
+    if (tbl.length >= 2 && Array.isArray(tbl[0]) && tbl[0].length === 2) {
+      // 2-col key-value table
+      tbl.slice(1).forEach((row: any[]) => {
+        if (row[0] != null) tableRows.push({ key: String(row[0]), value: String(row[1] ?? "—") });
+      });
+    } else if (tbl.length >= 2) {
+      // multi-col: first row = headers
+      const headers = Array.isArray(tbl[0]) ? tbl[0] : [];
+      tbl.slice(1, 6).forEach((row: any[], ri: number) => {
+        headers.forEach((h: any, ci: number) => {
+          tableRows.push({ key: `Row ${ri + 1} — ${h}`, value: String(row[ci] ?? "—") });
+        });
+      });
+    }
+  }
+
+  const pageTxt = meta.page_count ? `${meta.page_count} page${meta.page_count !== 1 ? "s" : ""}` : null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 8 }}
+      className="rounded-xl overflow-hidden"
+      style={{ border: "1px solid hsl(220 24% 16%)", background: "hsl(220 45% 3%)" }}
+    >
+      {/* ── Top bar ── */}
+      <div className="flex items-center justify-between px-4 py-2.5"
+        style={{ borderBottom: "1px solid hsl(220 24% 13%)", background: "hsl(220 40% 5%)" }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <FileText className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+          <span className="text-[11px] font-mono text-foreground truncate font-medium">{doc.filename}</span>
+          {pageTxt && <span className="pill-accent text-[9px] flex-shrink-0">{pageTxt}</span>}
+          {tables.length > 0 && <span className="pill-info text-[9px] flex-shrink-0">{tables.length} tables</span>}
+        </div>
+        <button onClick={onClose}
+          className="p-1 rounded hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* ── Split body ── */}
+      <div className="flex" style={{ minHeight: "360px", maxHeight: "520px" }}>
+
+        {/* LEFT — raw document text */}
+        <div className="flex-1 flex flex-col overflow-hidden"
+          style={{ borderRight: "1px solid hsl(220 24% 13%)", minWidth: 0 }}>
+          <div className="px-4 py-2 flex items-center gap-2"
+            style={{ borderBottom: "1px solid hsl(220 24% 11%)", background: "hsl(220 40% 4%)" }}>
+            <span className="text-[9px] font-mono text-primary/50 uppercase tracking-widest">Document Text</span>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 py-3 scrollbar-thin">
+            {text ? (
+              <pre className="text-[11px] font-mono leading-relaxed whitespace-pre-wrap m-0"
+                style={{ background: "transparent", color: "hsl(215 20% 65%)" }}>
+                {text}
+              </pre>
+            ) : (
+              <p className="text-xs text-muted-foreground/50 mt-4 text-center">No text content</p>
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT — structured data viewer */}
+        <div className="flex flex-col overflow-hidden" style={{ width: "48%", minWidth: 0 }}>
+          {/* Tab bar */}
+          <div className="flex items-center px-3 py-2 gap-1"
+            style={{ borderBottom: "1px solid hsl(220 24% 11%)", background: "hsl(220 40% 4%)" }}>
+            {(["markdown", "json"] as const).map(tab => (
+              <button key={tab} onClick={() => setRightTab(tab)}
+                className={`px-3 py-1 rounded text-[10px] font-mono transition-all ${rightTab === tab
+                    ? "bg-primary/15 text-primary border border-primary/25"
+                    : "text-muted-foreground hover:text-foreground"
+                  }`}>
+                {tab === "markdown" ? "Markdown" : "JSON"}
+              </button>
+            ))}
+            {/* Table navigator */}
+            {tables.length > 1 && rightTab === "markdown" && (
+              <div className="ml-auto flex items-center gap-1">
+                <button onClick={() => setTableIdx(i => Math.max(0, i - 1))}
+                  disabled={tableIdx === 0}
+                  className="p-0.5 rounded text-muted-foreground hover:text-foreground disabled:opacity-30">
+                  <ChevronLeft className="w-3 h-3" />
+                </button>
+                <span className="text-[9px] font-mono text-muted-foreground">
+                  {tableIdx + 1}/{tables.length}
+                </span>
+                <button onClick={() => setTableIdx(i => Math.min(tables.length - 1, i + 1))}
+                  disabled={tableIdx === tables.length - 1}
+                  className="p-0.5 rounded text-muted-foreground hover:text-foreground disabled:opacity-30">
+                  <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto scrollbar-thin">
+            {rightTab === "markdown" ? (
+              <div>
+                {tableRows.length > 0 ? (
+                  <table className="w-full border-collapse text-[11px]">
+                    <tbody>
+                      {tableRows.map((row, i) => (
+                        <tr key={i}
+                          style={{ borderBottom: "1px solid hsl(220 24% 10%)" }}
+                          className={i % 2 === 0 ? "" : ""}>
+                          <td className="px-4 py-2 font-medium text-muted-foreground align-top"
+                            style={{ width: "45%", background: "hsl(220 36% 6%)" }}>
+                            {row.key}
+                          </td>
+                          <td className="px-4 py-2 text-foreground align-top font-mono"
+                            style={{ background: "hsl(220 40% 5%)" }}>
+                            {row.value}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : tables.length > 0 ? (
+                  // Multi-col table fallback
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-[10px] font-mono">
+                      {tables[tableIdx]?.slice(0, 10).map((row: any[], ri: number) => (
+                        <tr key={ri} style={{ borderBottom: "1px solid hsl(220 24% 10%)" }}>
+                          {(Array.isArray(row) ? row : []).map((cell: any, ci: number) => (
+                            <td key={ci}
+                              className={`px-3 py-2 ${ri === 0 ? "font-semibold text-primary/80" : "text-muted-foreground"}`}
+                              style={{ background: ri === 0 ? "hsl(220 36% 7%)" : ri % 2 === 0 ? "hsl(220 40% 5%)" : "hsl(220 36% 6%)" }}>
+                              {cell ?? "—"}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </table>
+                  </div>
+                ) : (
+                  <div className="p-4 text-center">
+                    <p className="text-xs text-muted-foreground/50">No structured tables found</p>
+                    <p className="text-[10px] text-muted-foreground/30 mt-1">Text content shown on the left</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-4" style={{ background: "hsl(220 45% 3%)" }}>
+                <pre className="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap m-0"
+                  style={{ background: "transparent" }}>
+                  {JSON.stringify(parsed, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────
 export default function UploadExtractPage() {
   const { toast } = useToast();
   const store = useWorkflowStore();
+
   const [uploading, setUploading] = useState(false);
-  const [parsing, setParsing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [creatingSession, setCreatingSession] = useState(false);
-  const [schemaJsonInput, setSchemaJsonInput] = useState("{}");
-  const [schemaJsonError, setSchemaJsonError] = useState("");
-  const [existingSchemas, setExistingSchemas] = useState<any[]>([]);
-  const [existingSessions, setExistingSessions] = useState<any[]>([]);
+  const [creatingSession, setCreating] = useState(false);
+  const [schemaJsonInput, setSchemaJson] = useState("{}");
+  const [schemaJsonError, setSchemaErr] = useState("");
+  const [existingSchemas, setSchemas] = useState<any[]>([]);
+  const [existingSessions, setSessions] = useState<any[]>([]);
   const [loadingSchemas, setLoadingSchemas] = useState(false);
-  const [showParsedPreview, setShowParsedPreview] = useState(false);
+  const [activeTab, setActiveTab] = useState<"single" | "batch" | "zip">("single");
+
+  const [parseStatuses, setParseStatuses] = useState<Record<string, ParseStatus>>({});
+  const [parseResults, setParseResults] = useState<Record<string, any>>({});
+  const [openViewerId, setOpenViewerId] = useState<string | null>(null);
+
+  const [batchExtracting, setBatchExtracting] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
+  const [batchResults, setBatchResults] = useState<Record<string, any>>({});
+  const [batchErrors, setBatchErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (store.currentStep === 1) {
       setLoadingSchemas(true);
-      api.listSchemas().then(res => {
-        setExistingSchemas(res.data?.items || res.data || []);
-      }).catch(() => { }).finally(() => setLoadingSchemas(false));
+      api.listSchemas().then(r => setSchemas(r.data?.items || r.data || [])).catch(() => { }).finally(() => setLoadingSchemas(false));
     }
     if (store.currentStep === 2) {
-      api.listSessions().then(res => {
-        setExistingSessions(res.data?.items || res.data || []);
-      }).catch(() => { });
+      api.listSessions().then(r => setSessions(r.data?.items || r.data || [])).catch(() => { });
     }
   }, [store.currentStep]);
 
-  // ── Upload ─────────────────────────────────────────────────────────────────
   const handleUpload = async (files: FileList | null, type: "single" | "batch" | "zip") => {
     if (!files?.length) return;
     setUploading(true);
@@ -58,151 +268,130 @@ export default function UploadExtractPage() {
       if (type === "single") res = await api.uploadSingle(files[0]);
       else if (type === "batch") res = await api.uploadBatch(Array.from(files));
       else res = await api.uploadFolderZip(files[0]);
-
-      // Normalise: batch returns { count, documents:[...] }, single returns a single doc object
       const raw = res.data;
-      const docs: any[] = Array.isArray(raw)
-        ? raw
-        : raw?.documents
-          ? raw.documents
-          : raw?.document_id
-            ? [raw]
-            : [];
-
-      if (!docs.length) throw new Error("No documents returned from upload");
-
+      const docs = Array.isArray(raw) ? raw : raw?.documents ? raw.documents : raw?.document_id ? [raw] : [];
+      if (!docs.length) throw new Error("No documents returned");
       store.addUploadedDocs(docs);
-      if (docs[0]?.document_id) store.setSelectedDoc(docs[0].document_id);
-      toast({ title: "Upload successful", description: `${docs.length} document(s) uploaded` });
+      store.setSelectedDoc(docs[0].document_id);
+      const st: Record<string, ParseStatus> = {};
+      docs.forEach((d: any) => { st[d.document_id] = "idle"; });
+      setParseStatuses(prev => ({ ...prev, ...st }));
+      toast({ title: `${docs.length} document${docs.length > 1 ? "s" : ""} uploaded` });
     } catch (err: any) {
       toast({ title: "Upload failed", description: err.message, variant: "destructive" });
-    } finally {
-      setUploading(false);
-    }
+    } finally { setUploading(false); }
   };
 
-  // ── Parse ──────────────────────────────────────────────────────────────────
-  // BUG FIX: pass store.selectedDocId to setParsedContent so the store knows
-  // WHICH document this parsed data belongs to. When the user switches to a
-  // different document, the store restores (or clears) the preview correctly.
-  const handleParse = async () => {
-    if (!store.selectedDocId) return;
-    const docId = store.selectedDocId;
-    setParsing(true);
+  const handleParseAll = async () => {
+    const docs = store.uploadedDocs;
+    if (!docs.length) return;
+    const init: Record<string, ParseStatus> = {};
+    docs.forEach(d => { init[d.document_id] = "parsing"; });
+    setParseStatuses(prev => ({ ...prev, ...init }));
+    setOpenViewerId(null);
+    await Promise.allSettled(
+      docs.map(async (doc) => {
+        try {
+          const res = await api.getParsedDocument(doc.document_id);
+          setParseStatuses(prev => ({ ...prev, [doc.document_id]: "done" }));
+          setParseResults(prev => ({ ...prev, [doc.document_id]: res.data || res }));
+        } catch {
+          setParseStatuses(prev => ({ ...prev, [doc.document_id]: "error" }));
+        }
+      })
+    );
+    toast({ title: "All documents parsed" });
+  };
+
+  const handleExtractAll = async () => {
+    if (!store.sessionId) { toast({ title: "No session", variant: "destructive" }); return; }
+    const docIds = store.uploadedDocs.map(d => d.document_id).filter(Boolean);
+    if (!docIds.length) { toast({ title: "No documents", variant: "destructive" }); return; }
+    setBatchExtracting(true);
+    setBatchProgress({ done: 0, total: docIds.length });
+    setBatchResults({}); setBatchErrors({});
     try {
-      const res = await api.getParsedDocument(docId);
-      store.setParsedContent(res.data || res, docId);   // ← BUG FIX
-      setShowParsedPreview(true);
-      toast({ title: "Document parsed" });
+      const res = await api.runBatchExtraction(store.sessionId, docIds, store.schemaId || undefined);
+      const payload = res.data || res;
+      const jobs: any[] = payload.jobs || [];
+      const errors: any[] = payload.errors || [];
+      const results: Record<string, any> = {};
+      const errMap: Record<string, string> = {};
+      jobs.forEach((j: any) => { results[j.document_id] = j; });
+      errors.forEach((e: any) => { errMap[e.document_id] = e.error; });
+      setBatchResults(results); setBatchErrors(errMap);
+      setBatchProgress({ done: docIds.length, total: docIds.length });
+      if (jobs[0]) store.setExtractionResult(jobs[0]);
+      store.setStep(4);
+      toast({ title: `Extraction complete — ${jobs.length}/${docIds.length} succeeded` });
     } catch (err: any) {
-      toast({ title: "Parse failed", description: err.message, variant: "destructive" });
-    } finally {
-      setParsing(false);
-    }
+      toast({ title: "Batch failed", description: err.message, variant: "destructive" });
+    } finally { setBatchExtracting(false); }
   };
 
-  // ── Schema ─────────────────────────────────────────────────────────────────
-  const validateSchemaJson = (json: string): boolean => {
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify(store.uploadedDocs.map(doc => ({
+      filename: doc.filename, document_id: doc.document_id,
+      result: batchResults[doc.document_id] ?? null, error: batchErrors[doc.document_id] ?? null,
+    })), null, 2)], { type: "application/json" });
+    Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `batch_${Date.now()}.json` }).click();
+  };
+
+  const exportCSV = () => {
+    const keys = new Set<string>();
+    store.uploadedDocs.forEach(doc => {
+      const d = batchResults[doc.document_id]?.extracted_data || batchResults[doc.document_id]?.data;
+      if (d && typeof d === "object") Object.keys(d).forEach(k => keys.add(k));
+    });
+    const headers = ["filename", "document_id", ...Array.from(keys), "error"];
+    const rows = store.uploadedDocs.map(doc => {
+      const d = batchResults[doc.document_id]?.extracted_data || batchResults[doc.document_id]?.data || {};
+      return headers.map(h =>
+        h === "filename" ? doc.filename : h === "document_id" ? doc.document_id : h === "error"
+          ? (batchErrors[doc.document_id] ?? "") : String((d as any)[h] ?? ""));
+    });
+    const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `batch_${Date.now()}.csv` }).click();
+  };
+
+  const validateSchema = (json: string) => {
     try {
-      const parsed = JSON.parse(json);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        setSchemaJsonError("Schema must be a JSON object"); return false;
-      }
-      setSchemaJsonError(""); return true;
-    } catch (e: any) {
-      setSchemaJsonError(`Invalid JSON: ${e.message}`); return false;
-    }
+      const p = JSON.parse(json);
+      if (typeof p !== "object" || p === null || Array.isArray(p)) { setSchemaErr("Schema must be a JSON object"); return false; }
+      setSchemaErr(""); return true;
+    } catch (e: any) { setSchemaErr(`Invalid JSON: ${e.message}`); return false; }
   };
 
-  const handleSchemaUpload = async (file: File) => {
+  const handleSchemaFile = async (file: File) => {
     try {
       const text = await file.text();
-      if (!validateSchemaJson(text)) {
-        toast({ title: "Invalid schema file", variant: "destructive" }); return;
-      }
-      const res = await api.uploadSchema(file);
-      const schema = res.data || res;
-      store.setSchemaId(schema.schema_id || "");
-      store.setSchemaDefinition(schema.schema_definition || JSON.parse(text));
-      store.setSchemaName(schema.name || file.name);
-      store.setSchemaValid(true);
-      toast({ title: "Schema uploaded", description: schema.name || file.name });
-    } catch (err: any) {
-      toast({ title: "Schema upload failed", description: err.message, variant: "destructive" });
-    }
+      if (!validateSchema(text)) return;
+      const res = await api.uploadSchema(file); const s = res.data || res;
+      store.setSchemaId(s.schema_id || ""); store.setSchemaDefinition(s.schema_definition || JSON.parse(text));
+      store.setSchemaName(s.name || file.name); store.setSchemaValid(true);
+      toast({ title: "Schema loaded" });
+    } catch (err: any) { toast({ title: "Schema upload failed", description: err.message, variant: "destructive" }); }
   };
 
   const handleSchemaPaste = () => {
-    if (!validateSchemaJson(schemaJsonInput)) return;
+    if (!validateSchema(schemaJsonInput)) return;
     store.setSchemaDefinition(JSON.parse(schemaJsonInput));
-    store.setSchemaValid(true);
-    store.setSchemaId("");
-    store.setSchemaName("Inline Schema");
-    toast({ title: "Schema validated and applied" });
+    store.setSchemaValid(true); store.setSchemaId(""); store.setSchemaName("Inline Schema");
+    toast({ title: "Schema applied" });
   };
 
-  const handleSelectExistingSchema = (schema: any) => {
-    store.setSchemaId(schema.schema_id);
-    store.setSchemaDefinition(schema.schema_definition);
-    store.setSchemaName(schema.name);
-    store.setSchemaValid(true);
-    toast({ title: "Schema selected", description: schema.name });
-  };
-
-  // ── Session ────────────────────────────────────────────────────────────────
   const handleCreateSession = async () => {
-    setCreatingSession(true);
+    setCreating(true);
     try {
       const needsProvider = store.sessionMode === "ai" || store.sessionMode === "hybrid";
-      const payload: any = {
-        session_id: crypto.randomUUID(),
-        mode: store.sessionMode,
-        provider: needsProvider ? store.sessionProvider : "none",
-      };
-      if (needsProvider && store.providerConfig.api_key) {
-        payload.provider_config = { ...store.providerConfig };
-      }
-      const res = await api.createSession(payload);
-      const session = res.data || res;
-      const sid = session.session_id || session.id || "";
-      if (!sid) throw new Error("No session_id returned from backend");
-      store.setSessionId(sid);
-      store.setSessionCreated(true);
-      toast({ title: "Session created", description: `ID: ${sid.slice(0, 12)}…` });
+      const payload: any = { session_id: crypto.randomUUID(), mode: store.sessionMode, provider: needsProvider ? store.sessionProvider : "none" };
+      if (needsProvider && store.providerConfig.api_key) payload.provider_config = { ...store.providerConfig };
+      const res = await api.createSession(payload); const s = res.data || res;
+      const sid = s.session_id || s.id || ""; if (!sid) throw new Error("No session_id returned");
+      store.setSessionId(sid); store.setSessionCreated(true); toast({ title: "Session created" });
     } catch (err: any) {
-      toast({ title: "Session creation failed", description: err.message, variant: "destructive" });
-    } finally {
-      setCreatingSession(false);
-    }
-  };
-
-  const handleSelectExistingSession = (session: any) => {
-    store.setSessionId(session.session_id);
-    store.setSessionMode(session.mode || "auto");
-    store.setSessionProvider(session.provider || "groq");
-    store.setSessionCreated(true);
-    toast({ title: "Session selected" });
-  };
-
-  // ── Extraction ─────────────────────────────────────────────────────────────
-  const handleExtract = async () => {
-    if (!store.selectedDocId || !store.sessionId) {
-      toast({ title: "Missing required data", description: "Document and session are required", variant: "destructive" });
-      return;
-    }
-    store.setExtracting(true);
-    try {
-      const schemaId = store.schemaId || undefined;
-      const schemaDef = !schemaId && store.schemaDefinition ? store.schemaDefinition : undefined;
-      const res = await api.runExtraction(store.sessionId, store.selectedDocId, schemaId, schemaDef);
-      store.setExtractionResult(res.data || res);
-      store.setStep(4);
-      toast({ title: "Extraction complete" });
-    } catch (err: any) {
-      toast({ title: "Extraction failed", description: err.message, variant: "destructive" });
-    } finally {
-      store.setExtracting(false);
-    }
+      toast({ title: "Session failed", description: err.message, variant: "destructive" });
+    } finally { setCreating(false); }
   };
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -210,504 +399,345 @@ export default function UploadExtractPage() {
     handleUpload(e.dataTransfer.files, e.dataTransfer.files.length > 1 ? "batch" : "single");
   }, []);
 
-  const canAdvance = (from: number): boolean => {
-    switch (from) {
-      case 0: return store.uploadedDocs.length > 0 && !!store.selectedDocId;
-      case 1: return store.schemaSource === "skip" || store.schemaValid;
-      case 2: return store.sessionCreated && !!store.sessionId;
-      case 3: return !!store.extractionResult;
-      default: return true;
-    }
+  const parsedCount = store.uploadedDocs.filter(d => parseStatuses[d.document_id] === "done").length;
+  const anyParsing = store.uploadedDocs.some(d => parseStatuses[d.document_id] === "parsing");
+  const allParsed = store.uploadedDocs.length > 0 && store.uploadedDocs.every(d =>
+    parseStatuses[d.document_id] === "done" || parseStatuses[d.document_id] === "error");
+
+  const canAdvance = (step: number) => {
+    if (step === 0) return store.uploadedDocs.length > 0;
+    if (step === 1) return store.schemaSource === "skip" || store.schemaValid;
+    if (step === 2) return store.sessionCreated && !!store.sessionId;
+    if (step === 3) return Object.keys(batchResults).length > 0;
+    return true;
   };
-
   const goNext = () => { if (canAdvance(store.currentStep)) store.setStep(store.currentStep + 1); };
+  const needsProvider = store.sessionMode === "ai" || store.sessionMode === "hybrid";
 
-  const needsProviderConfig = store.sessionMode === "ai" || store.sessionMode === "hybrid";
+  const Stepper = () => (
+    <div className="flex items-center justify-center gap-0 mb-8 overflow-x-auto pb-1">
+      {STEPS.map((s, i) => {
+        const done = i < store.currentStep, active = i === store.currentStep, locked = i > store.currentStep;
+        return (
+          <div key={s} className="flex items-center">
+            <button onClick={() => !locked && store.setStep(i)} disabled={locked}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-[11px] font-medium tracking-wide transition-all whitespace-nowrap
+                ${active ? "text-primary" : done ? "text-emerald-400 cursor-pointer" : "text-muted-foreground/50 cursor-not-allowed"}`}
+              style={active ? { background: "hsl(185 72% 44% / 0.08)", border: "1px solid hsl(185 72% 44% / 0.22)" }
+                : done ? { background: "hsl(148 58% 40% / 0.06)", border: "1px solid hsl(148 58% 40% / 0.18)" }
+                  : { background: "transparent", border: "1px solid transparent" }}>
+              {done ? <CheckCircle2 className="w-3.5 h-3.5" />
+                : <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-mono"
+                  style={{ background: active ? "hsl(185 72% 44% / 0.2)" : "hsl(220 26% 12%)" }}>{i + 1}</span>}
+              {s}
+            </button>
+            {i < STEPS.length - 1 && (
+              <div className="w-6 h-px mx-0.5"
+                style={{ background: i < store.currentStep ? "hsl(148 58% 40% / 0.4)" : "hsl(220 24% 16%)" }} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 
-  // True only when parsedContent belongs to the currently selected doc
-  const parsedIsForCurrentDoc = store.parsedContent && store.parsedForDocId === store.selectedDocId;
+  const ContinueBtn = ({ label = "Continue", step }: { label?: string; step: number }) => (
+    <div className="mt-6 flex justify-end">
+      <button onClick={goNext} disabled={!canAdvance(step)} className="btn btn-primary glow-primary">
+        {label} <ArrowRight className="w-4 h-4" />
+      </button>
+    </div>
+  );
 
-  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="relative z-10 pt-24 pb-16 px-6 max-w-5xl mx-auto">
+    <div className="relative z-10 pt-[52px] min-h-screen">
+      <div className="max-w-5xl mx-auto px-5 py-8">
 
-      {/* Page heading */}
-      <div className="mb-8">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="w-1 h-1 rounded-full bg-primary animate-pulse-glow" />
-          <span className="section-label">Agentic Extraction Pipeline</span>
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-1 h-1 rounded-full bg-primary animate-pulse-glow" />
+            <span className="section-label">Agentic Extraction Pipeline</span>
+          </div>
+          <h1 className="text-2xl font-display font-bold text-foreground">Upload & Extract</h1>
+          <p className="text-muted-foreground text-sm mt-1">End-to-end document data extraction in 5 steps</p>
+          <div className="divider mt-4" />
         </div>
-        <h1 className="text-3xl font-display font-bold text-foreground">Upload &amp; Extract</h1>
-        <p className="text-muted-foreground text-sm mt-1">End-to-end document data extraction in 5 steps</p>
-        <div className="divider mt-4" />
-      </div>
 
-      {/* Stepper */}
-      <div className="flex items-center justify-center gap-0 mb-8 overflow-x-auto pb-1">
-        {STEPS.map((s, i) => {
-          const done = i < store.currentStep;
-          const active = i === store.currentStep;
-          const locked = i > store.currentStep;
-          return (
-            <div key={s} className="flex items-center">
-              <button
-                onClick={() => !locked && store.setStep(i)}
-                disabled={locked}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[11px] font-medium tracking-wide whitespace-nowrap transition-all ${active ? "text-primary"
-                    : done ? "text-emerald-600 cursor-pointer"
-                      : "text-muted-foreground/50 cursor-not-allowed"
-                  }`}
-                style={
-                  active ? { background: "hsl(199 88% 42% / 0.08)", border: "1px solid hsl(199 88% 42% / 0.22)" }
-                    : done ? { background: "hsl(148 55% 40% / 0.06)", border: "1px solid hsl(148 55% 40% / 0.2)" }
-                      : { background: "transparent", border: "1px solid transparent" }
-                }
-              >
-                {done
-                  ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                  : <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-mono"
-                    style={{ background: active ? "hsl(199 88% 42% / 0.15)" : "hsl(var(--muted))" }}>
-                    {i + 1}
-                  </span>
-                }
-                {s}
-              </button>
-              {i < STEPS.length - 1 && (
-                <div className="w-6 h-px mx-0.5"
-                  style={{ background: i < store.currentStep ? "hsl(148 55% 40% / 0.4)" : "hsl(var(--border))" }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
+        <Stepper />
 
-      <AnimatePresence mode="wait">
+        <AnimatePresence mode="wait">
 
-        {/* ══ STEP 0: UPLOAD ════════════════════════════════════════════════ */}
-        {store.currentStep === 0 && (
-          <motion.div key="upload" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-            <HUDFrame label="Document Intake">
+          {/* ══ STEP 0: UPLOAD ══════════════════════════════════ */}
+          {store.currentStep === 0 && (
+            <motion.div key="step-upload" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+
+              {/* Tabs */}
+              <div className="mb-4 flex items-center gap-1 p-1 rounded-lg w-fit"
+                style={{ background: "hsl(220 40% 7%)", border: "1px solid hsl(220 24% 13%)" }}>
+                {([
+                  { id: "single" as const, icon: File, label: "Single File" },
+                  { id: "batch" as const, icon: Files, label: "Batch Upload" },
+                  { id: "zip" as const, icon: FileArchive, label: "ZIP Folder" },
+                ]).map(tab => (
+                  <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                    className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium transition-all
+                      ${activeTab === tab.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                    <tab.icon className="w-3.5 h-3.5" />{tab.label}
+                  </button>
+                ))}
+              </div>
+
               {/* Drop zone */}
-              <div
-                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={onDrop}
-                className="rounded-xl p-10 text-center transition-all"
-                style={{
-                  border: `2px dashed ${dragOver ? "hsl(var(--primary))" : "hsl(var(--border))"}`,
-                  background: dragOver ? "hsl(var(--primary) / 0.04)" : "hsl(var(--muted) / 0.3)",
-                }}
-              >
+              <div onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={onDrop}
+                className="rounded-xl transition-all"
+                style={{ border: `2px dashed ${dragOver ? "hsl(185 72% 44% / 0.6)" : "hsl(220 24% 20%)"}`, background: dragOver ? "hsl(185 72% 44% / 0.04)" : "hsl(220 40% 6% / 0.5)", padding: "3rem 2rem" }}>
                 {uploading ? (
-                  <div className="flex flex-col items-center gap-3">
+                  <div className="flex flex-col items-center gap-3 text-center">
                     <Loader2 className="w-10 h-10 text-primary animate-spin" />
-                    <p className="text-sm font-medium text-primary">Uploading &amp; processing…</p>
+                    <p className="text-sm font-medium text-primary">Uploading…</p>
                   </div>
                 ) : (
-                  <>
-                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                      style={{ background: "hsl(var(--primary) / 0.08)", border: "1px solid hsl(var(--primary) / 0.18)" }}>
+                  <div className="flex flex-col items-center gap-5 text-center">
+                    <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
+                      style={{ background: "hsl(185 72% 44% / 0.08)", border: "1px solid hsl(185 72% 44% / 0.2)" }}>
                       <Upload className="w-6 h-6 text-primary" />
                     </div>
-                    <p className="text-base font-semibold text-foreground mb-1">Drop files here</p>
-                    <p className="text-sm text-muted-foreground mb-1">or choose an upload method below</p>
-                    <p className="text-xs text-muted-foreground/60 font-mono mb-5">PDF, PNG, JPG, JPEG, TIFF</p>
-
-                    <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5">
-                      <label className="btn btn-primary glow-primary cursor-pointer">
-                        <FileUp className="w-4 h-4" /> Single File
-                        <input type="file" className="hidden" onChange={e => handleUpload(e.target.files, "single")} />
-                      </label>
-                      <label className="btn btn-ghost cursor-pointer">
-                        <Upload className="w-4 h-4" /> Batch Upload
-                        <input type="file" multiple className="hidden" onChange={e => handleUpload(e.target.files, "batch")} />
-                      </label>
-                      <label className="btn btn-ghost cursor-pointer">
-                        <FolderArchive className="w-4 h-4" /> ZIP Folder
-                        <input type="file" accept=".zip" className="hidden" onChange={e => handleUpload(e.target.files, "zip")} />
-                      </label>
+                    <div>
+                      <p className="text-base font-semibold text-foreground mb-1">Drop files here</p>
+                      <p className="text-sm text-muted-foreground">or choose an upload method below</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1 font-mono">PDF, PNG, JPG, JPEG, TIFF</p>
                     </div>
-                  </>
+                    <div className="flex flex-col sm:flex-row items-center gap-2.5">
+                      {activeTab === "single" && (
+                        <label className="btn btn-primary glow-primary cursor-pointer">
+                          <FileUp className="w-4 h-4" /> Choose File
+                          <input type="file" className="hidden" onChange={e => handleUpload(e.target.files, "single")} />
+                        </label>
+                      )}
+                      {activeTab === "batch" && (
+                        <label className="btn btn-primary glow-primary cursor-pointer">
+                          <Files className="w-4 h-4" /> Choose Files
+                          <input type="file" multiple className="hidden" onChange={e => handleUpload(e.target.files, "batch")} />
+                        </label>
+                      )}
+                      {activeTab === "zip" && (
+                        <label className="btn btn-primary glow-primary cursor-pointer">
+                          <FileArchive className="w-4 h-4" /> Choose ZIP
+                          <input type="file" accept=".zip" className="hidden" onChange={e => handleUpload(e.target.files, "zip")} />
+                        </label>
+                      )}
+                      {activeTab !== "single" && (
+                        <label className="btn btn-ghost cursor-pointer">
+                          <File className="w-4 h-4" /> Single File
+                          <input type="file" className="hidden" onChange={e => handleUpload(e.target.files, "single")} />
+                        </label>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
-            </HUDFrame>
 
-            {/* Uploaded documents list */}
-            {store.uploadedDocs.length > 0 && (
-              <div className="mt-5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="section-label">Uploaded Documents ({store.uploadedDocs.length})</p>
-                  <span className="text-[10px] font-mono text-muted-foreground">
-                    {Object.keys(store.parsedCache).length}/{store.uploadedDocs.length} parsed
-                  </span>
-                </div>
+              {/* Uploaded docs */}
+              {store.uploadedDocs.length > 0 && (
+                <div className="mt-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="section-label">Uploaded Documents ({store.uploadedDocs.length})</p>
+                    {allParsed && (
+                      <span className="text-[10px] font-mono text-emerald-400">{parsedCount}/{store.uploadedDocs.length} parsed ✓</span>
+                    )}
+                  </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {store.uploadedDocs.map((doc, i) => {
-                    const isSelected = store.selectedDocId === doc.document_id;
-                    const isParsed = !!store.parsedCache[doc.document_id];
-                    return (
-                      <motion.div
-                        key={doc.document_id}
-                        initial={{ opacity: 0, scale: 0.97 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ delay: i * 0.04 }}
-                        onClick={() => {
-                          store.setSelectedDoc(doc.document_id);
-                          setShowParsedPreview(false);
-                        }}
-                        className="flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all"
-                        style={{
-                          background: isSelected ? "hsl(var(--primary) / 0.06)" : "white",
-                          border: `1px solid ${isSelected ? "hsl(var(--primary) / 0.35)" : "hsl(var(--border))"}`,
-                          boxShadow: isSelected ? "0 0 0 3px hsl(var(--primary) / 0.08)" : "0 1px 3px hsl(215 35% 12% / 0.04)",
-                        }}
-                      >
-                        <div className="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center"
-                          style={{ background: "hsl(var(--primary) / 0.08)", border: "1px solid hsl(var(--primary) / 0.15)" }}>
-                          <FileText className="w-4 h-4 text-primary" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-foreground truncate">{doc.filename || `Document ${i + 1}`}</p>
-                          <p className="text-[10px] font-mono text-muted-foreground truncate">{doc.document_id.slice(0, 18)}…</p>
-                        </div>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {isParsed && <span className="pill-success text-[9px]">Parsed ✓</span>}
-                          {isSelected && <CheckCircle2 className="w-4 h-4 text-primary" />}
-                        </div>
-                      </motion.div>
-                    );
-                  })}
-                </div>
+                  {/* Doc cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {store.uploadedDocs.map((doc, i) => {
+                      const ps = parseStatuses[doc.document_id] || "idle";
+                      const isSelected = store.selectedDocId === doc.document_id;
+                      const hasParsed = !!parseResults[doc.document_id];
+                      return (
+                        <motion.div key={i}
+                          initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.04 }}
+                          onClick={() => {
+                            store.setSelectedDoc(doc.document_id);
+                            if (hasParsed) setOpenViewerId(prev => prev === doc.document_id ? null : doc.document_id);
+                          }}
+                          className="flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all"
+                          style={{
+                            background: "hsl(220 40% 7%)",
+                            border: isSelected ? "1px solid hsl(185 72% 44% / 0.4)" : "1px solid hsl(220 24% 13%)",
+                          }}>
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                            style={{ background: "hsl(185 72% 44% / 0.08)", border: "1px solid hsl(185 72% 44% / 0.14)" }}>
+                            <FileText className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-foreground truncate">{doc.filename || `Doc ${i + 1}`}</p>
+                            <p className="text-[10px] font-mono text-muted-foreground truncate">{doc.document_id}</p>
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <ParseBadge status={ps} />
+                            {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-primary" />}
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
 
-                {/* Parse controls */}
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    onClick={handleParse}
-                    disabled={!store.selectedDocId || parsing}
-                    className="btn btn-ghost btn-sm"
-                  >
-                    {parsing
-                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Parsing…</>
-                      : <><FileSearch className="w-3.5 h-3.5" /> Parse Selected Doc</>
-                    }
-                  </button>
-
-                  {/* BUG FIX: only show View Preview when parsedContent belongs to the CURRENT selected doc */}
-                  {parsedIsForCurrentDoc && (
-                    <button
-                      onClick={() => setShowParsedPreview(v => !v)}
-                      className="btn btn-ghost btn-sm"
-                    >
-                      {showParsedPreview
-                        ? <><EyeOff className="w-3.5 h-3.5" /> Hide Preview</>
-                        : <><Eye className="w-3.5 h-3.5" /> View Preview</>
+                  {/* Parse All button */}
+                  <div className="flex items-center gap-2 flex-wrap pt-1">
+                    <button onClick={handleParseAll} disabled={anyParsing} className="btn btn-primary glow-primary">
+                      {anyParsing
+                        ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Parsing {parsedCount}/{store.uploadedDocs.length}…</>
+                        : <><FileText className="w-3.5 h-3.5" /> Parse All ({store.uploadedDocs.length})</>
                       }
                     </button>
+                  </div>
+
+                  {/* Progress bar */}
+                  {anyParsing && (
+                    <div className="space-y-1">
+                      <div className="h-1 w-full rounded-full overflow-hidden" style={{ background: "hsl(220 24% 13%)" }}>
+                        <motion.div className="h-full rounded-full" style={{ background: "hsl(185 72% 44%)" }}
+                          animate={{ width: `${(parsedCount / store.uploadedDocs.length) * 100}%` }} transition={{ duration: 0.3 }} />
+                      </div>
+                      <p className="text-[10px] font-mono text-muted-foreground">{parsedCount}/{store.uploadedDocs.length} parsed</p>
+                    </div>
                   )}
 
-                  {/* Hint when another doc is selected but its parse result is not yet available */}
-                  {store.selectedDocId && !parsedIsForCurrentDoc && !parsing && (
-                    <p className="text-[11px] text-muted-foreground font-mono">
-                      Click "Parse Selected Doc" to view its content
-                    </p>
-                  )}
+                  {/* ══ SPLIT VIEWER — one per parsed doc ══ */}
+                  <AnimatePresence>
+                    {store.uploadedDocs.map(doc => {
+                      const isOpen = openViewerId === doc.document_id;
+                      const parsed = parseResults[doc.document_id];
+                      if (!isOpen || !parsed) return null;
+                      return (
+                        <motion.div key={`viewer-${doc.document_id}`}
+                          initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
+                          <DocSplitViewer doc={doc} parsed={parsed} onClose={() => setOpenViewerId(null)} />
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+
+                  <ContinueBtn label="Continue to Schema" step={0} />
                 </div>
+              )}
+            </motion.div>
+          )}
 
-                {/* Structured parsed preview */}
-                <AnimatePresence>
-                  {showParsedPreview && parsedIsForCurrentDoc && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden rounded-xl"
-                      style={{ border: "1px solid hsl(var(--border))" }}
-                    >
-                      {/* Header */}
-                      <div className="flex items-center justify-between px-4 py-2.5"
-                        style={{ background: "hsl(var(--muted))", borderBottom: "1px solid hsl(var(--border))" }}>
-                        <div className="flex items-center gap-2">
-                          <FileText className="w-3.5 h-3.5 text-primary" />
-                          <span className="text-[11px] font-mono text-muted-foreground">parsed_document.json</span>
-                          {store.parsedContent?.document_text && (
-                            <span className="pill-info text-[9px]">
-                              {store.parsedContent.document_text.length.toLocaleString()} chars
-                            </span>
-                          )}
-                          {store.parsedContent?.tables?.length > 0 && (
-                            <span className="pill-success text-[9px]">
-                              {store.parsedContent.tables.length} tables
-                            </span>
-                          )}
-                          {store.parsedContent?.pages?.length > 0 && (
-                            <span className="pill-muted text-[9px]">
-                              {store.parsedContent.pages.length} pages
-                            </span>
-                          )}
-                        </div>
-                        <button onClick={() => setShowParsedPreview(false)}
-                          className="text-muted-foreground hover:text-foreground transition-colors">
-                          <X className="w-3.5 h-3.5" />
+          {/* ══ STEP 1: SCHEMA ══════════════════════════════════ */}
+          {store.currentStep === 1 && (
+            <motion.div key="step-schema" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <HUDFrame label="Schema Configuration">
+                <div>
+                  <p className="text-sm font-medium text-foreground mb-4">Choose how to provide your extraction schema</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
+                    {([
+                      { id: "upload" as SchemaSource, label: "Upload JSON", icon: FileUp },
+                      { id: "paste" as SchemaSource, label: "Paste JSON", icon: Code },
+                      { id: "existing" as SchemaSource, label: "Saved Schemas", icon: List },
+                      { id: "skip" as SchemaSource, label: "Skip / Auto", icon: SkipForward },
+                    ]).map(opt => {
+                      const active = store.schemaSource === opt.id;
+                      return (
+                        <button key={opt.id}
+                          onClick={() => { store.setSchemaSource(opt.id); if (opt.id === "skip") { store.setSchemaValid(false); store.setSchemaId(""); store.setSchemaDefinition(null); } }}
+                          className="flex flex-col items-center gap-2 p-3.5 rounded-xl text-center transition-all"
+                          style={{ background: active ? "hsl(185 72% 44% / 0.08)" : "hsl(220 26% 9%)", border: `1px solid ${active ? "hsl(185 72% 44% / 0.28)" : "hsl(220 24% 14%)"}` }}>
+                          <opt.icon className={`w-5 h-5 ${active ? "text-primary" : "text-muted-foreground"}`} />
+                          <span className={`text-[11px] font-medium ${active ? "text-primary" : "text-muted-foreground"}`}>{opt.label}</span>
                         </button>
-                      </div>
-
-                      {/* Document text */}
-                      {store.parsedContent?.document_text && (
-                        <div className="px-4 py-3 bg-white"
-                          style={{ borderBottom: "1px solid hsl(var(--border))" }}>
-                          <p className="section-label mb-1.5">Document Text</p>
-                          <p className="text-[11px] font-mono text-foreground/70 leading-relaxed whitespace-pre-wrap line-clamp-8">
-                            {store.parsedContent.document_text}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Tables preview */}
-                      {store.parsedContent?.tables?.length > 0 && (
-                        <div className="px-4 py-3 bg-white overflow-x-auto"
-                          style={{ borderBottom: "1px solid hsl(var(--border))" }}>
-                          <p className="section-label mb-2">Tables ({store.parsedContent.tables.length})</p>
-                          {store.parsedContent.tables.slice(0, 1).map((table: any[][], ti: number) => (
-                            <table key={ti} className="text-[10px] font-mono border-collapse">
-                              {(Array.isArray(table) ? table.slice(0, 5) : []).map((row: any[], ri: number) => (
-                                <tr key={ri} style={{ borderBottom: "1px solid hsl(var(--border))" }}>
-                                  {(Array.isArray(row) ? row : []).map((cell: any, ci: number) => (
-                                    <td key={ci}
-                                      className={`px-2 py-1 whitespace-nowrap max-w-[140px] truncate ${ri === 0 ? "font-semibold text-primary/80" : "text-foreground/70"
-                                        }`}>
-                                      {cell ?? "—"}
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </table>
-                          ))}
-                          {store.parsedContent.tables.length > 1 && (
-                            <p className="text-[9px] font-mono text-muted-foreground mt-1.5">
-                              +{store.parsedContent.tables.length - 1} more tables
-                            </p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Raw JSON */}
-                      <details className="group bg-white">
-                        <summary className="flex items-center gap-2 px-4 py-2.5 cursor-pointer text-[10px] font-mono text-muted-foreground hover:text-foreground">
-                          <ChevronDown className="w-3 h-3 transition-transform group-open:rotate-180" />
-                          Raw JSON
-                        </summary>
-                        <div className="px-4 pb-4 max-h-60 overflow-auto">
-                          <pre className="text-[10px] font-mono text-foreground/60 whitespace-pre-wrap leading-relaxed">
-                            {JSON.stringify(store.parsedContent, null, 2)}
-                          </pre>
-                        </div>
-                      </details>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <div className="flex justify-end pt-1">
-                  <button onClick={goNext} disabled={!canAdvance(0)} className="btn btn-primary glow-primary">
-                    Continue to Schema <ArrowRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            )}
-          </motion.div>
-        )}
-
-        {/* ══ STEP 1: SCHEMA ════════════════════════════════════════════════ */}
-        {store.currentStep === 1 && (
-          <motion.div key="schema" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-            <HUDFrame label="Schema Configuration">
-              <GlassCard hover={false}>
-                <p className="text-sm font-medium text-foreground mb-4">Choose how to provide your extraction schema</p>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-5">
-                  {([
-                    { id: "upload", label: "Upload JSON", icon: FileUp },
-                    { id: "paste", label: "Paste JSON", icon: Code },
-                    { id: "existing", label: "Saved Schemas", icon: List },
-                    { id: "skip", label: "Skip / Auto", icon: SkipForward },
-                  ] as { id: SchemaSource; label: string; icon: any }[]).map(opt => {
-                    const active = store.schemaSource === opt.id;
-                    return (
-                      <button key={opt.id}
-                        onClick={() => {
-                          store.setSchemaSource(opt.id);
-                          if (opt.id === "skip") { store.setSchemaValid(false); store.setSchemaId(""); store.setSchemaDefinition(null); }
-                        }}
-                        className="flex flex-col items-center gap-2 p-3.5 rounded-xl text-center transition-all"
-                        style={{
-                          background: active ? "hsl(var(--primary) / 0.07)" : "hsl(var(--muted) / 0.5)",
-                          border: `1px solid ${active ? "hsl(var(--primary) / 0.28)" : "hsl(var(--border))"}`,
-                        }}
-                      >
-                        <opt.icon className={`w-5 h-5 ${active ? "text-primary" : "text-muted-foreground"}`} />
-                        <span className={`text-[11px] font-medium ${active ? "text-primary" : "text-muted-foreground"}`}>
-                          {opt.label}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Upload JSON */}
-                {store.schemaSource === "upload" && (
-                  <div className="space-y-3">
+                      );
+                    })}
+                  </div>
+                  {store.schemaSource === "upload" && (
                     <label className="block w-full rounded-xl p-6 text-center cursor-pointer transition-all"
-                      style={{ background: "hsl(var(--muted) / 0.4)", border: "2px dashed hsl(var(--border))" }}
-                      onMouseEnter={e => (e.currentTarget.style.borderColor = "hsl(var(--primary) / 0.4)")}
-                      onMouseLeave={e => (e.currentTarget.style.borderColor = "hsl(var(--border))")}>
-                      <FileUp className="w-8 h-8 text-primary/40 mx-auto mb-2" />
-                      <p className="text-sm font-medium text-foreground mb-0.5">Drop your .json schema file</p>
+                      style={{ background: "hsl(220 26% 9%)", border: "2px dashed hsl(220 24% 18%)" }}
+                      onMouseEnter={e => (e.currentTarget.style.borderColor = "hsl(185 72% 44% / 0.35)")}
+                      onMouseLeave={e => (e.currentTarget.style.borderColor = "hsl(220 24% 18%)")}>
+                      <FileUp className="w-8 h-8 text-primary/50 mx-auto mb-2" />
+                      <p className="text-sm font-medium text-foreground mb-1">Drop your .json schema file</p>
                       <p className="text-xs text-muted-foreground">or click to browse</p>
-                      <input type="file" accept=".json" className="hidden"
-                        onChange={e => e.target.files?.[0] && handleSchemaUpload(e.target.files[0])} />
+                      <input type="file" accept=".json" className="hidden" onChange={e => e.target.files?.[0] && handleSchemaFile(e.target.files[0])} />
                     </label>
-                    {store.schemaValid && store.schemaName && (
-                      <div className="flex items-center gap-2 p-3 rounded-lg"
-                        style={{ background: "hsl(148 55% 40% / 0.06)", border: "1px solid hsl(148 55% 40% / 0.2)" }}>
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                        <span className="text-sm text-emerald-700 font-medium">{store.schemaName}</span>
+                  )}
+                  {store.schemaSource === "paste" && (
+                    <div className="space-y-3">
+                      <textarea value={schemaJsonInput} onChange={e => { setSchemaJson(e.target.value); setSchemaErr(""); }}
+                        rows={10} placeholder={'{\n  "fields": [\n    { "name": "model_number", "type": "string" }\n  ]\n}'}
+                        className="input-base resize-none leading-relaxed" style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "12px" }} />
+                      {schemaJsonError && <div className="flex items-center gap-2 text-xs text-red-400"><AlertCircle className="w-3.5 h-3.5" /> {schemaJsonError}</div>}
+                      <div className="flex items-center gap-2">
+                        <button onClick={handleSchemaPaste} className="btn btn-primary glow-primary"><CheckCircle2 className="w-4 h-4" /> Validate & Apply</button>
+                        <button onClick={() => { try { setSchemaJson(JSON.stringify(JSON.parse(schemaJsonInput), null, 2)); } catch { } }} className="btn btn-ghost">Format JSON</button>
                       </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Paste JSON */}
-                {store.schemaSource === "paste" && (
-                  <div className="space-y-3">
-                    <textarea
-                      value={schemaJsonInput}
-                      onChange={e => { setSchemaJsonInput(e.target.value); setSchemaJsonError(""); }}
-                      rows={9}
-                      placeholder={'{\n  "fields": [\n    { "name": "model_number", "type": "string" }\n  ]\n}'}
-                      className="input-base resize-none leading-relaxed"
-                      style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "12px" }}
-                    />
-                    {schemaJsonError && (
-                      <div className="flex items-center gap-2 text-xs text-red-600">
-                        <AlertCircle className="w-3.5 h-3.5" /> {schemaJsonError}
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <button onClick={handleSchemaPaste} className="btn btn-primary glow-primary">
-                        <CheckCircle2 className="w-4 h-4" /> Validate &amp; Apply
-                      </button>
-                      <button onClick={() => { try { setSchemaJsonInput(JSON.stringify(JSON.parse(schemaJsonInput), null, 2)); } catch { } }}
-                        className="btn btn-ghost">
-                        Format JSON
-                      </button>
                     </div>
-                    {store.schemaValid && store.schemaSource === "paste" && (
-                      <div className="flex items-center gap-2 p-3 rounded-lg"
-                        style={{ background: "hsl(148 55% 40% / 0.06)", border: "1px solid hsl(148 55% 40% / 0.2)" }}>
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                        <span className="text-sm text-emerald-700">Schema validated and applied</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Existing */}
-                {store.schemaSource === "existing" && (
-                  <div>
-                    {loadingSchemas ? (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
-                        <Loader2 className="w-4 h-4 animate-spin" /> Loading schemas…
-                      </div>
-                    ) : existingSchemas.length === 0 ? (
-                      <div className="text-center py-8">
-                        <Database className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-                        <p className="text-sm text-muted-foreground">No saved schemas found</p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto">
-                        {existingSchemas.map((s: any) => {
-                          const active = store.schemaId === s.schema_id;
-                          return (
-                            <button key={s.schema_id} onClick={() => handleSelectExistingSchema(s)}
-                              className="p-3 rounded-lg text-left transition-all"
-                              style={{
-                                background: active ? "hsl(var(--primary) / 0.07)" : "hsl(var(--muted) / 0.4)",
-                                border: `1px solid ${active ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
-                              }}>
-                              <div className="flex items-center gap-2">
-                                <FileText className={`w-4 h-4 flex-shrink-0 ${active ? "text-primary" : "text-muted-foreground"}`} />
-                                <p className="text-sm font-medium text-foreground truncate">{s.name}</p>
-                                {active && <CheckCircle2 className="w-3.5 h-3.5 text-primary ml-auto flex-shrink-0" />}
-                              </div>
-                              <p className="text-[10px] font-mono text-muted-foreground truncate mt-1 pl-6">{s.schema_id}</p>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Skip */}
-                {store.schemaSource === "skip" && (
-                  <div className="p-4 rounded-xl text-center"
-                    style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}>
-                    <SkipForward className="w-7 h-7 text-muted-foreground/40 mx-auto mb-2" />
-                    <p className="text-sm text-muted-foreground">No schema — backend will attempt automatic extraction</p>
-                  </div>
-                )}
-
-                {/* Active schema banner */}
-                {store.schemaValid && (
-                  <div className="mt-4 flex items-center gap-2.5 p-3 rounded-lg"
-                    style={{ background: "hsl(148 55% 40% / 0.06)", border: "1px solid hsl(148 55% 40% / 0.18)" }}>
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                    <div className="min-w-0">
-                      <span className="text-xs text-emerald-700 font-medium">Active: </span>
-                      <span className="text-xs text-emerald-700/80 font-mono">{store.schemaName}</span>
-                      {store.schemaId && (
-                        <span className="text-[10px] text-muted-foreground ml-2 font-mono">({store.schemaId.slice(0, 8)}…)</span>
+                  )}
+                  {store.schemaSource === "existing" && (
+                    <div className="space-y-2">
+                      {loadingSchemas ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
+                      ) : existingSchemas.length === 0 ? (
+                        <div className="text-center py-8"><Database className="w-10 h-10 text-muted-foreground/30 mx-auto mb-2" /><p className="text-sm text-muted-foreground">No saved schemas</p></div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto">
+                          {existingSchemas.map((s: any) => {
+                            const active = store.schemaId === s.schema_id;
+                            return (
+                              <button key={s.schema_id}
+                                onClick={() => { store.setSchemaId(s.schema_id); store.setSchemaDefinition(s.schema_definition); store.setSchemaName(s.name); store.setSchemaValid(true); }}
+                                className="p-3 rounded-lg text-left transition-all"
+                                style={{ background: active ? "hsl(185 72% 44% / 0.07)" : "hsl(220 26% 9%)", border: `1px solid ${active ? "hsl(185 72% 44% / 0.3)" : "hsl(220 24% 14%)"}` }}>
+                                <div className="flex items-center gap-2">
+                                  <FileText className={`w-4 h-4 flex-shrink-0 ${active ? "text-primary" : "text-muted-foreground"}`} />
+                                  <p className="text-sm font-medium text-foreground truncate">{s.name}</p>
+                                  {active && <CheckCircle2 className="w-3.5 h-3.5 text-primary ml-auto" />}
+                                </div>
+                                <p className="text-[10px] font-mono text-muted-foreground truncate mt-1 pl-6">{s.schema_id}</p>
+                              </button>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
-                  </div>
-                )}
-              </GlassCard>
-            </HUDFrame>
-
-            <div className="mt-5 flex justify-end">
-              <button onClick={goNext} disabled={!canAdvance(1)} className="btn btn-primary glow-primary">
-                Continue to Session <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </motion.div>
-        )}
-
-        {/* ══ STEP 2: SESSION ═══════════════════════════════════════════════ */}
-        {store.currentStep === 2 && (
-          <motion.div key="session" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-            <HUDFrame label="Session Configuration">
-              <GlassCard hover={false}>
-                {store.sessionCreated ? (
-                  <div className="p-4 rounded-xl"
-                    style={{ background: "hsl(148 55% 40% / 0.05)", border: "1px solid hsl(148 55% 40% / 0.2)" }}>
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                        <span className="font-semibold text-emerald-700">Session Active</span>
+                  )}
+                  {store.schemaSource === "skip" && (
+                    <div className="p-4 rounded-xl text-center" style={{ background: "hsl(220 26% 9%)", border: "1px solid hsl(220 24% 14%)" }}>
+                      <SkipForward className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
+                      <p className="text-sm text-muted-foreground">No schema — automatic extraction will be attempted</p>
+                    </div>
+                  )}
+                  {store.schemaValid && (
+                    <div className="mt-4 flex items-center gap-2.5 p-3 rounded-lg" style={{ background: "hsl(148 58% 40% / 0.06)", border: "1px solid hsl(148 58% 40% / 0.18)" }}>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                      <div className="min-w-0">
+                        <span className="text-xs text-emerald-400 font-medium">Active: </span>
+                        <span className="text-xs text-emerald-400/80 font-mono">{store.schemaName}</span>
+                        {store.schemaId && <span className="text-[10px] text-muted-foreground ml-2 font-mono">({store.schemaId.slice(0, 8)}…)</span>}
                       </div>
+                    </div>
+                  )}
+                </div>
+              </HUDFrame>
+              <ContinueBtn label="Continue to Session" step={1} />
+            </motion.div>
+          )}
+
+          {/* ══ STEP 2: SESSION ══════════════════════════════════ */}
+          {store.currentStep === 2 && (
+            <motion.div key="step-session" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <HUDFrame label="Session Configuration">
+                {store.sessionCreated ? (
+                  <div className="p-4 rounded-xl" style={{ background: "hsl(148 58% 40% / 0.05)", border: "1px solid hsl(148 58% 40% / 0.18)" }}>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-emerald-400" /><span className="font-semibold text-emerald-400">Session Active</span></div>
                       <button onClick={() => { store.setSessionCreated(false); store.setSessionId(""); }}
-                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground font-mono">
+                        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground font-mono">
                         <RotateCcw className="w-3 h-3" /> Change
                       </button>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { label: "Session ID", value: store.sessionId.slice(0, 14) + "…" },
-                        { label: "Mode", value: store.sessionMode },
-                        { label: "Provider", value: store.sessionProvider },
-                      ].map(item => (
-                        <div key={item.label} className="p-2.5 rounded-lg bg-white"
-                          style={{ border: "1px solid hsl(var(--border))" }}>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {[{ label: "Session ID", value: store.sessionId.slice(0, 16) + "…" }, { label: "Mode", value: store.sessionMode }, { label: "Provider", value: store.sessionProvider }].map(item => (
+                        <div key={item.label} className="p-2.5 rounded-lg" style={{ background: "hsl(220 40% 7%)", border: "1px solid hsl(220 24% 13%)" }}>
                           <p className="text-[9px] font-mono text-muted-foreground uppercase tracking-wider mb-0.5">{item.label}</p>
                           <p className="text-xs font-mono text-foreground">{item.value}</p>
                         </div>
@@ -716,32 +746,26 @@ export default function UploadExtractPage() {
                   </div>
                 ) : (
                   <div className="space-y-5">
-                    {/* Existing sessions */}
                     {existingSessions.length > 0 && (
                       <div>
                         <p className="section-label mb-2">Recent Sessions</p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-36 overflow-y-auto mb-4">
                           {existingSessions.slice(0, 6).map((s: any) => (
-                            <button key={s.session_id} onClick={() => handleSelectExistingSession(s)}
-                              className="p-3 rounded-lg text-left transition-all hover:border-primary/20"
-                              style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}>
+                            <button key={s.session_id}
+                              onClick={() => { store.setSessionId(s.session_id); store.setSessionMode(s.mode || "auto"); store.setSessionProvider(s.provider || "none"); store.setSessionCreated(true); toast({ title: "Session selected" }); }}
+                              className="p-3 rounded-lg text-left transition-all hover:border-primary/20" style={{ background: "hsl(220 26% 9%)", border: "1px solid hsl(220 24% 14%)" }}>
                               <p className="text-[10px] font-mono text-foreground truncate">{s.session_id}</p>
-                              <div className="flex gap-1.5 mt-1.5">
-                                <span className="pill-info text-[9px]">{s.mode}</span>
-                                <span className="pill-accent text-[9px]">{s.provider}</span>
-                              </div>
+                              <div className="flex gap-1.5 mt-1.5"><span className="pill-info text-[9px]">{s.mode}</span><span className="pill-accent text-[9px]">{s.provider}</span></div>
                             </button>
                           ))}
                         </div>
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 h-px bg-border" />
+                        <div className="flex items-center gap-3 mb-1">
+                          <div className="flex-1 h-px" style={{ background: "hsl(220 24% 13%)" }} />
                           <span className="text-[10px] font-mono text-muted-foreground uppercase">or create new</span>
-                          <div className="flex-1 h-px bg-border" />
+                          <div className="flex-1 h-px" style={{ background: "hsl(220 24% 13%)" }} />
                         </div>
                       </div>
                     )}
-
-                    {/* Mode */}
                     <div>
                       <p className="section-label mb-2.5">Extraction Mode</p>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -750,21 +774,16 @@ export default function UploadExtractPage() {
                           return (
                             <button key={m.id} onClick={() => store.setSessionMode(m.id)}
                               className="p-4 rounded-xl flex flex-col items-center gap-2 text-center transition-all"
-                              style={{
-                                background: active ? "hsl(var(--primary) / 0.08)" : "hsl(var(--muted) / 0.4)",
-                                border: `1px solid ${active ? "hsl(var(--primary) / 0.28)" : "hsl(var(--border))"}`,
-                              }}>
+                              style={{ background: active ? "hsl(185 72% 44% / 0.08)" : "hsl(220 26% 9%)", border: `1px solid ${active ? "hsl(185 72% 44% / 0.28)" : "hsl(220 24% 14%)"}` }}>
                               <m.icon className={`w-5 h-5 ${active ? "text-primary" : "text-muted-foreground"}`} />
                               <span className={`text-[12px] font-semibold ${active ? "text-primary" : "text-foreground"}`}>{m.label}</span>
-                              <span className="text-[9px] text-muted-foreground leading-tight">{m.desc}</span>
+                              <span className="text-[10px] text-muted-foreground leading-tight">{m.desc}</span>
                             </button>
                           );
                         })}
                       </div>
                     </div>
-
-                    {/* Provider config */}
-                    {needsProviderConfig && (
+                    {needsProvider && (
                       <div className="space-y-4">
                         <div>
                           <p className="section-label mb-2.5">AI Provider</p>
@@ -774,208 +793,167 @@ export default function UploadExtractPage() {
                               return (
                                 <button key={p} onClick={() => store.setSessionProvider(p)}
                                   className="px-4 py-1.5 rounded-lg text-xs font-mono tracking-wider uppercase transition-all"
-                                  style={{
-                                    background: active ? "hsl(var(--accent) / 0.1)" : "hsl(var(--muted) / 0.5)",
-                                    border: `1px solid ${active ? "hsl(var(--accent) / 0.35)" : "hsl(var(--border))"}`,
-                                    color: active ? "hsl(var(--accent))" : "hsl(var(--muted-foreground))",
-                                  }}>
+                                  style={{ background: active ? "hsl(248 55% 55% / 0.1)" : "hsl(220 26% 9%)", border: `1px solid ${active ? "hsl(248 55% 55% / 0.35)" : "hsl(220 24% 14%)"}`, color: active ? "hsl(248 55% 75%)" : "hsl(215 12% 42%)" }}>
                                   {p}
                                 </button>
                               );
                             })}
                           </div>
                         </div>
-
-                        <div className="p-4 rounded-xl space-y-3"
-                          style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}>
-                          <p className="section-label">Provider Configuration</p>
+                        <div className="p-4 rounded-xl space-y-3" style={{ background: "hsl(220 26% 8%)", border: "1px solid hsl(220 24% 13%)" }}>
+                          <p className="section-label">Provider Config</p>
                           <div>
                             <label className="text-[11px] text-muted-foreground block mb-1.5">API Key</label>
-                            <input type="password" value={store.providerConfig.api_key || ""}
-                              onChange={e => store.setProviderConfig({ ...store.providerConfig, api_key: e.target.value })}
-                              placeholder="Enter API key…" className="input-base" />
+                            <input type="password" value={store.providerConfig.api_key || ""} onChange={e => store.setProviderConfig({ ...store.providerConfig, api_key: e.target.value })} placeholder="Enter API key…" className="input-base" />
                           </div>
                           <div className="grid grid-cols-2 gap-3">
                             <div>
-                              <label className="text-[11px] text-muted-foreground block mb-1.5">Model (optional)</label>
-                              <input value={store.providerConfig.model || ""}
-                                onChange={e => store.setProviderConfig({ ...store.providerConfig, model: e.target.value })}
-                                placeholder="e.g. gpt-4o" className="input-base" />
+                              <label className="text-[11px] text-muted-foreground block mb-1.5">Model</label>
+                              <input value={store.providerConfig.model || ""} onChange={e => store.setProviderConfig({ ...store.providerConfig, model: e.target.value })} placeholder="e.g. gpt-4o" className="input-base" />
                             </div>
                             <div>
-                              <label className="text-[11px] text-muted-foreground block mb-1.5">Base URL (optional)</label>
-                              <input value={store.providerConfig.base_url || ""}
-                                onChange={e => store.setProviderConfig({ ...store.providerConfig, base_url: e.target.value })}
-                                placeholder="Custom endpoint" className="input-base" />
+                              <label className="text-[11px] text-muted-foreground block mb-1.5">Base URL</label>
+                              <input value={store.providerConfig.base_url || ""} onChange={e => store.setProviderConfig({ ...store.providerConfig, base_url: e.target.value })} placeholder="Custom endpoint" className="input-base" />
                             </div>
                           </div>
                         </div>
                       </div>
                     )}
-
-                    <button onClick={handleCreateSession} disabled={creatingSession}
-                      className="w-full btn btn-primary glow-primary justify-center py-3">
-                      {creatingSession
-                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Initializing…</>
-                        : <><Zap className="w-4 h-4" /> Initialize Session</>
-                      }
+                    <button onClick={handleCreateSession} disabled={creatingSession} className="w-full btn btn-primary glow-primary justify-center py-3">
+                      {creatingSession ? <><Loader2 className="w-4 h-4 animate-spin" /> Initializing…</> : <><Zap className="w-4 h-4" /> Initialize Session</>}
                     </button>
                   </div>
                 )}
-              </GlassCard>
-            </HUDFrame>
+              </HUDFrame>
+              <ContinueBtn label="Continue to Extraction" step={2} />
+            </motion.div>
+          )}
 
-            <div className="mt-5 flex justify-end">
-              <button onClick={goNext} disabled={!canAdvance(2)} className="btn btn-primary glow-primary">
-                Continue to Extraction <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </motion.div>
-        )}
-
-        {/* ══ STEP 3: EXTRACTION ════════════════════════════════════════════ */}
-        {store.currentStep === 3 && (
-          <motion.div key="extract" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-            <HUDFrame label="Extraction Summary">
-              <GlassCard hover={false}>
-                <p className="text-sm text-muted-foreground mb-4">Review your configuration before running extraction</p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
-                  {[
-                    { label: "Document", value: store.uploadedDocs.find(d => d.document_id === store.selectedDocId)?.filename || store.selectedDocId, icon: FileText },
-                    { label: "Schema", value: store.schemaName || "Auto (none)", icon: Database },
-                    {
-                      label: "Session", value: `${store.sessionMode} / ${store.sessionProvider}`, icon: Settings,
-                      sub: store.sessionId.slice(0, 12) + "…"
-                    },
-                  ].map(item => (
-                    <div key={item.label} className="p-3.5 rounded-xl"
-                      style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border))" }}>
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <item.icon className="w-3.5 h-3.5 text-primary/60" />
-                        <span className="section-label">{item.label}</span>
+          {/* ══ STEP 3: EXTRACT ALL ══════════════════════════════ */}
+          {store.currentStep === 3 && (
+            <motion.div key="step-extract" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <HUDFrame label="Batch Extraction">
+                <div className="space-y-5">
+                  <p className="text-sm text-muted-foreground">
+                    All <span className="text-foreground font-semibold">{store.uploadedDocs.length}</span> document{store.uploadedDocs.length !== 1 ? "s" : ""} extracted simultaneously in one request.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {[
+                      { label: "Documents", value: `${store.uploadedDocs.length} files`, icon: Files },
+                      { label: "Schema", value: store.schemaName || "Auto (none)", icon: Database },
+                      { label: "Session", value: `${store.sessionMode} / ${store.sessionProvider}`, icon: Settings, sub: store.sessionId.slice(0, 14) + "…" },
+                    ].map(item => (
+                      <div key={item.label} className="p-3.5 rounded-xl" style={{ background: "hsl(220 26% 8%)", border: "1px solid hsl(220 24% 13%)" }}>
+                        <div className="flex items-center gap-2 mb-2"><item.icon className="w-3.5 h-3.5 text-primary/60" /><span className="section-label">{item.label}</span></div>
+                        <p className="text-sm font-medium text-foreground truncate">{item.value}</p>
+                        {"sub" in item && <p className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate">{item.sub}</p>}
                       </div>
-                      <p className="text-sm font-medium text-foreground truncate">{item.value}</p>
-                      {(item as any).sub && (
-                        <p className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate">{(item as any).sub}</p>
-                      )}
+                    ))}
+                  </div>
+                  {batchExtracting && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground"><span>Extracting…</span><span>{batchProgress.done}/{batchProgress.total}</span></div>
+                      <div className="h-2 w-full rounded-full overflow-hidden" style={{ background: "hsl(220 24% 13%)" }}>
+                        <motion.div className="h-full rounded-full" style={{ background: "hsl(185 72% 44%)" }}
+                          animate={{ width: `${(batchProgress.done / batchProgress.total) * 100}%` }} transition={{ duration: 0.3 }} />
+                      </div>
                     </div>
-                  ))}
+                  )}
+                  <button onClick={handleExtractAll} disabled={batchExtracting} className="w-full btn btn-primary glow-primary justify-center py-3.5 text-base">
+                    {batchExtracting
+                      ? <><Loader2 className="w-5 h-5 animate-spin" /> Extracting {batchProgress.done}/{batchProgress.total}…</>
+                      : <><PlayCircle className="w-5 h-5" /> Extract All ({store.uploadedDocs.length}) Documents</>
+                    }
+                  </button>
                 </div>
+              </HUDFrame>
+            </motion.div>
+          )}
 
-                <button onClick={handleExtract} disabled={store.extracting}
-                  className="w-full btn btn-primary glow-primary justify-center py-3.5 text-base">
-                  {store.extracting
-                    ? <><Loader2 className="w-5 h-5 animate-spin" /> Extracting data…</>
-                    : <><Zap className="w-5 h-5" /> Execute Extraction</>
-                  }
-                </button>
-              </GlassCard>
-            </HUDFrame>
-          </motion.div>
-        )}
-
-        {/* ══ STEP 4: RESULTS ═══════════════════════════════════════════════ */}
-        {store.currentStep === 4 && (
-          <motion.div key="result" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-            <HUDFrame label="Extraction Results">
-              <GlassCard hover={false}>
-                <div className="space-y-4">
-                  {/* Status bar */}
-                  <div className="flex items-center justify-between p-3.5 rounded-xl"
-                    style={{ background: "hsl(148 55% 40% / 0.06)", border: "1px solid hsl(148 55% 40% / 0.2)" }}>
+          {/* ══ STEP 4: RESULTS ══════════════════════════════════ */}
+          {store.currentStep === 4 && (
+            <motion.div key="step-results" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <HUDFrame label="Batch Results">
+                <div className="space-y-5">
+                  <div className="flex items-center justify-between p-3 rounded-lg" style={{ background: "hsl(148 58% 40% / 0.06)", border: "1px solid hsl(148 58% 40% / 0.18)" }}>
                     <div className="flex items-center gap-2.5">
-                      <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                       <div>
-                        <p className="text-sm font-semibold text-emerald-700">Extraction Complete</p>
-                        {store.extractionResult?.engine_used && (
-                          <p className="text-[10px] font-mono text-muted-foreground">Engine: {store.extractionResult.engine_used}</p>
-                        )}
+                        <p className="text-sm font-semibold text-emerald-400">{Object.keys(batchResults).length}/{store.uploadedDocs.length} extracted</p>
+                        {Object.keys(batchErrors).length > 0 && <p className="text-[10px] font-mono text-red-400">{Object.keys(batchErrors).length} failed</p>}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          const b = new Blob([JSON.stringify(store.extractionResult, null, 2)], { type: "application/json" });
-                          const a = document.createElement("a");
-                          a.href = URL.createObjectURL(b);
-                          a.download = `extraction_${store.selectedDocId?.slice(0, 8)}.json`;
-                          a.click();
-                        }}
-                        className="btn btn-primary btn-sm">
-                        <Download className="w-3.5 h-3.5" /> JSON
-                      </button>
-                      <button
-                        onClick={() => {
-                          try {
-                            const data = store.extractionResult?.extracted_data || store.extractionResult?.data || store.extractionResult;
-                            const flat = typeof data === "object" && !Array.isArray(data) ? data : { result: JSON.stringify(data) };
-                            const headers = Object.keys(flat);
-                            const csv = [
-                              headers.join(","),
-                              headers.map(h => `"${String(flat[h] ?? "").replace(/"/g, '""')}"`).join(","),
-                            ].join("\n");
-                            const b = new Blob([csv], { type: "text/csv" });
-                            const a = document.createElement("a");
-                            a.href = URL.createObjectURL(b);
-                            a.download = `extraction_${store.selectedDocId?.slice(0, 8)}.csv`;
-                            a.click();
-                          } catch { }
-                        }}
-                        className="btn btn-ghost btn-sm">
-                        <Download className="w-3.5 h-3.5" /> CSV
-                      </button>
+                      <button onClick={exportJSON} className="btn btn-primary btn-sm"><Download className="w-3.5 h-3.5" /> JSON</button>
+                      <button onClick={exportCSV} className="btn btn-ghost btn-sm"><Download className="w-3.5 h-3.5" /> CSV</button>
                     </div>
                   </div>
 
-                  {/* Extracted fields */}
-                  {(() => {
-                    const data = store.extractionResult?.extracted_data || store.extractionResult?.data;
-                    if (!data || typeof data !== "object") return null;
-                    const entries = Object.entries(data);
-                    if (!entries.length) return null;
-                    return (
-                      <div>
-                        <p className="section-label mb-2.5">Extracted Fields ({entries.length})</p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {entries.map(([key, val]) => (
-                            <div key={key} className="p-3 rounded-lg bg-white"
-                              style={{ border: "1px solid hsl(var(--border))" }}>
-                              <p className="text-[9px] font-mono text-primary/60 uppercase tracking-wider mb-1">{key}</p>
-                              <p className="text-sm text-foreground font-mono break-all">
-                                {typeof val === "object" ? JSON.stringify(val) : String(val)}
-                              </p>
+                  {/* Per-doc result cards — split viewer style */}
+                  <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+                    {store.uploadedDocs.map(doc => {
+                      const r = batchResults[doc.document_id];
+                      const err = batchErrors[doc.document_id];
+                      const data = r?.extracted_data || r?.data;
+                      const entries = data && typeof data === "object" ? Object.entries(data) : [];
+                      return (
+                        <details key={doc.document_id} className="group rounded-xl overflow-hidden"
+                          style={{ background: "hsl(220 26% 8%)", border: `1px solid ${err ? "hsl(0 60% 40% / 0.3)" : r ? "hsl(148 58% 40% / 0.2)" : "hsl(220 24% 13%)"}` }}>
+                          <summary className="flex items-center gap-3 px-4 py-3 cursor-pointer list-none select-none">
+                            {err ? <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                              : r ? <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                                : <Loader2 className="w-4 h-4 text-muted-foreground flex-shrink-0" />}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-foreground truncate">{doc.filename}</p>
+                              <p className="text-[10px] font-mono text-muted-foreground truncate">{doc.document_id}</p>
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
+                            {entries.length > 0 && <span className="text-[10px] font-mono text-primary/70 mr-2 flex-shrink-0">{entries.length} fields</span>}
+                            <ChevronDown className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-180 flex-shrink-0" />
+                          </summary>
 
-                  {/* Raw JSON */}
-                  <details className="group">
-                    <summary className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground cursor-pointer hover:text-foreground py-1">
-                      <ChevronDown className="w-3.5 h-3.5 transition-transform group-open:rotate-180" />
-                      Raw API Response
-                    </summary>
-                    <div className="mt-2 rounded-xl overflow-auto max-h-72 p-4 bg-white"
-                      style={{ border: "1px solid hsl(var(--border))" }}>
-                      <pre className="text-[10px] font-mono text-foreground/60 whitespace-pre-wrap leading-relaxed">
-                        {JSON.stringify(store.extractionResult, null, 2)}
-                      </pre>
-                    </div>
-                  </details>
+                          <div style={{ borderTop: "1px solid hsl(220 24% 13%)", background: "hsl(220 40% 5%)" }}>
+                            {err ? (
+                              <p className="px-4 py-3 text-xs text-red-400 font-mono">{err}</p>
+                            ) : entries.length > 0 ? (
+                              /* Split table — matches image 2 style */
+                              <table className="w-full border-collapse text-[11px]">
+                                <tbody>
+                                  {entries.map(([key, val], i) => (
+                                    <tr key={key} style={{ borderBottom: "1px solid hsl(220 24% 10%)" }}>
+                                      <td className="px-4 py-2.5 font-medium text-muted-foreground align-top"
+                                        style={{ width: "42%", background: i % 2 === 0 ? "hsl(220 36% 6%)" : "hsl(220 34% 7%)" }}>
+                                        {key}
+                                      </td>
+                                      <td className="px-4 py-2.5 text-foreground align-top font-mono text-[11px]"
+                                        style={{ background: i % 2 === 0 ? "hsl(220 40% 5%)" : "hsl(220 38% 6%)" }}>
+                                        {typeof val === "object" ? JSON.stringify(val) : String(val ?? "—")}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            ) : (
+                              <pre className="px-4 py-3 text-[10px] font-mono text-muted-foreground whitespace-pre-wrap m-0"
+                                style={{ background: "transparent" }}>
+                                {JSON.stringify(r, null, 2)}
+                              </pre>
+                            )}
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
 
-                  <button onClick={() => store.resetWorkflow()} className="btn btn-ghost">
+                  <button onClick={() => { store.resetWorkflow(); setBatchResults({}); setBatchErrors({}); setParseStatuses({}); setParseResults({}); }} className="btn btn-ghost">
                     <RotateCcw className="w-4 h-4" /> Start New Extraction
                   </button>
                 </div>
-              </GlassCard>
-            </HUDFrame>
-          </motion.div>
-        )}
+              </HUDFrame>
+            </motion.div>
+          )}
 
-      </AnimatePresence>
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
