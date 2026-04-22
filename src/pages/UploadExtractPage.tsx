@@ -138,8 +138,8 @@ function DocSplitViewer({
             {(["markdown", "json"] as const).map(tab => (
               <button key={tab} onClick={() => setRightTab(tab)}
                 className={`px-3 py-1 rounded text-[10px] font-mono transition-all ${rightTab === tab
-                    ? "bg-primary/15 text-primary border border-primary/25"
-                    : "text-muted-foreground hover:text-foreground"
+                  ? "bg-primary/15 text-primary border border-primary/25"
+                  : "text-muted-foreground hover:text-foreground"
                   }`}>
                 {tab === "markdown" ? "Markdown" : "JSON"}
               </button>

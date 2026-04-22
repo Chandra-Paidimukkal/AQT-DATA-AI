@@ -1,547 +1,686 @@
 import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { api } from "@/services/api";
 import { useToast } from "@/hooks/use-toast";
 import {
-    Database, RefreshCw, Eye, Download, Trash2, Play, X,
-    CheckCircle2, XCircle, Clock, AlertCircle, Loader2,
-    FileText, ChevronDown, ChevronRight, RotateCcw, Filter,
+    Database, RefreshCw, ChevronRight, ChevronDown,
+    CheckCircle2, XCircle, Clock, Loader2, RotateCcw,
+    Download, Trash2, FileText, X, Eye, AlertCircle,
+    Table2, Code2, Filter,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface DbRecord {
+interface JobDetail {
     job_id: string;
-    status: "completed" | "failed" | "running" | "pending";
+    document_id: string;
+    filename: string;
+    status: string;
     engine_used: string | null;
-    created_at: string | null;
     started_at: string | null;
     completed_at: string | null;
     duration_seconds: string | null;
     error_message: string | null;
+    extracted_rows: Record<string, any>[];
+    extracted_raw: any;
     field_count: number;
-    result_file_path: string | null;
-    document: { document_id: string; filename: string; content_type: string | null; uploaded_at: string | null };
-    schema: { schema_id: string | null; schema_name: string | null };
-    session: { session_id: string; mode: string | null; provider: string | null };
+    row_count: number;
 }
 
-interface Stats {
-    total: number; completed: number; failed: number; running: number; pending: number;
+interface Batch {
+    batch_id: string;
+    status: string;
+    schema_name: string | null;
+    schema_id: string | null;
+    session: { session_id: string; mode: string; provider: string };
+    document_count: number;
+    completed_count: number;
+    failed_count: number;
+    started_at: string | null;
+    completed_at: string | null;
+    duration_seconds: string | null;
+    created_at: string | null;
+    error_message: string | null;
+    jobs?: JobDetail[];
 }
 
-// ── Status config ─────────────────────────────────────────────────────────────
-const STATUS = {
-    completed: { icon: CheckCircle2, color: "text-emerald-600", bg: "hsl(148 55% 40% / 0.08)", bd: "hsl(148 55% 40% / 0.2)", label: "Completed" },
-    failed: { icon: XCircle, color: "text-red-500", bg: "hsl(0 62% 46% / 0.08)", bd: "hsl(0 62% 46% / 0.22)", label: "Failed" },
-    running: { icon: Loader2, color: "text-sky-500", bg: "hsl(199 88% 42% / 0.08)", bd: "hsl(199 88% 42% / 0.22)", label: "Running" },
-    pending: { icon: Clock, color: "text-amber-500", bg: "hsl(36 85% 46% / 0.08)", bd: "hsl(36 85% 46% / 0.22)", label: "Pending" },
+interface Stats { total: number; completed: number; partial: number; failed: number; running: number; }
+
+// ── Status helpers ─────────────────────────────────────────────────────────────
+const STATUS_CFG = {
+    completed: { icon: CheckCircle2, label: "Completed", fg: "#10b981", bg: "rgba(16,185,129,0.10)", bd: "rgba(16,185,129,0.22)" },
+    partial: { icon: AlertCircle, label: "Partial", fg: "#f59e0b", bg: "rgba(245,158,11,0.10)", bd: "rgba(245,158,11,0.22)" },
+    failed: { icon: XCircle, label: "Failed", fg: "#ef4444", bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.22)" },
+    running: { icon: Loader2, label: "Running", fg: "#38bdf8", bg: "rgba(56,189,248,0.10)", bd: "rgba(56,189,248,0.22)" },
+    pending: { icon: Clock, label: "Pending", fg: "#94a3b8", bg: "rgba(148,163,184,0.10)", bd: "rgba(148,163,184,0.22)" },
 };
 
-function StatusChip({ status }: { status: string }) {
-    const cfg = STATUS[status as keyof typeof STATUS] ?? STATUS.pending;
-    const Icon = cfg.icon;
+function StatusBadge({ status }: { status: string }) {
+    const c = STATUS_CFG[status as keyof typeof STATUS_CFG] ?? STATUS_CFG.pending;
+    const Icon = c.icon;
     return (
         <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium"
-            style={{ background: cfg.bg, border: `1px solid ${cfg.bd}`, color: cfg.color.replace("text-", "") }}>
-            <Icon className={`w-3 h-3 ${cfg.color} ${status === "running" ? "animate-spin" : ""}`} />
-            <span className={cfg.color}>{cfg.label}</span>
+            style={{ color: c.fg, background: c.bg, border: `1px solid ${c.bd}` }}>
+            <Icon className={`w-3 h-3 ${status === "running" ? "animate-spin" : ""}`} style={{ color: c.fg }} />
+            {c.label}
         </span>
     );
 }
 
-// ── Main Component ─────────────────────────────────────────────────────────────
+// ── Excel table for extracted results ─────────────────────────────────────────
+function ExcelTable({ rows }: { rows: Record<string, any>[] }) {
+    if (!rows.length) return (
+        <p className="text-xs font-mono py-4 text-center" style={{ color: "#64748b" }}>No data extracted</p>
+    );
+
+    // Collect all unique column headers
+    const columns = Array.from(new Set(rows.flatMap(r => Object.keys(r))));
+
+    const cellVal = (v: any): string => {
+        if (v === null || v === undefined) return "—";
+        if (typeof v === "object") return JSON.stringify(v);
+        return String(v);
+    };
+
+    return (
+        <div className="overflow-auto rounded-lg" style={{ border: "1px solid #1e3a5f", maxHeight: "360px" }}>
+            <table className="w-full text-xs border-collapse" style={{ minWidth: `${Math.max(columns.length * 140, 400)}px` }}>
+                {/* Header */}
+                <thead>
+                    <tr style={{ background: "#0c2340", position: "sticky", top: 0, zIndex: 2 }}>
+                        <th className="px-3 py-2 text-left font-mono font-semibold whitespace-nowrap"
+                            style={{ color: "#38bdf8", borderRight: "1px solid #1e3a5f", borderBottom: "2px solid #1e3a5f", width: "48px" }}>
+                            #
+                        </th>
+                        {columns.map(col => (
+                            <th key={col} className="px-3 py-2 text-left font-mono font-semibold whitespace-nowrap"
+                                style={{ color: "#38bdf8", borderRight: "1px solid #1e3a5f", borderBottom: "2px solid #1e3a5f", minWidth: "120px" }}>
+                                {col}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                {/* Body */}
+                <tbody>
+                    {rows.map((row, ri) => (
+                        <tr key={ri}
+                            style={{ background: ri % 2 === 0 ? "#071a2e" : "#0a2038" }}>
+                            <td className="px-3 py-1.5 font-mono text-center"
+                                style={{ color: "#475569", borderRight: "1px solid #1e3a5f", borderBottom: "1px solid #1e3a5f" }}>
+                                {ri + 1}
+                            </td>
+                            {columns.map(col => {
+                                const val = cellVal(row[col]);
+                                const isNull = val === "—" || val === "NULL";
+                                return (
+                                    <td key={col} className="px-3 py-1.5 font-mono whitespace-nowrap max-w-[200px] overflow-hidden text-ellipsis"
+                                        style={{
+                                            color: isNull ? "#334155" : "#cbd5e1",
+                                            borderRight: "1px solid #1e3a5f",
+                                            borderBottom: "1px solid #1e3a5f",
+                                        }}
+                                        title={val}>
+                                        {val}
+                                    </td>
+                                );
+                            })}
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
+// ── Document result viewer ────────────────────────────────────────────────────
+function DocResultPanel({
+    job,
+    onClose,
+}: {
+    job: JobDetail;
+    onClose: () => void;
+}) {
+    const [tab, setTab] = useState<"table" | "json">("table");
+
+    const downloadCSV = () => {
+        if (!job.extracted_rows.length) return;
+        const cols = Array.from(new Set(job.extracted_rows.flatMap(r => Object.keys(r))));
+        const lines = [
+            cols.join(","),
+            ...job.extracted_rows.map(row =>
+                cols.map(c => `"${String(row[c] ?? "").replace(/"/g, '""')}"`).join(",")
+            ),
+        ];
+        const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+        a.download = `${job.filename.replace(/\s/g, "_")}_result.csv`; a.click();
+    };
+
+    const downloadJSON = () => {
+        const blob = new Blob([JSON.stringify(job.extracted_raw, null, 2)], { type: "application/json" });
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+        a.download = `${job.filename.replace(/\s/g, "_")}_result.json`; a.click();
+    };
+
+    return (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+            className="rounded-xl overflow-hidden"
+            style={{ border: "1px solid #1e3a5f", background: "#071a2e" }}>
+
+            {/* Panel header */}
+            <div className="flex items-center justify-between px-4 py-2.5"
+                style={{ borderBottom: "1px solid #1e3a5f", background: "#0a2038" }}>
+                <div className="flex items-center gap-2.5">
+                    <FileText className="w-3.5 h-3.5" style={{ color: "#38bdf8" }} />
+                    <span className="text-xs font-medium truncate max-w-[280px]" style={{ color: "#e2e8f0" }}>
+                        {job.filename}
+                    </span>
+                    <StatusBadge status={job.status} />
+                    {job.row_count > 0 && (
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                            style={{ background: "rgba(56,189,248,0.1)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.2)" }}>
+                            {job.row_count} {job.row_count === 1 ? "record" : "records"} · {job.field_count} fields
+                        </span>
+                    )}
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                    {/* Tab toggle */}
+                    <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid #1e3a5f" }}>
+                        {([["table", Table2, "Table"], ["json", Code2, "JSON"]] as const).map(([t, Icon, lbl]) => (
+                            <button key={t} onClick={() => setTab(t)}
+                                className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-mono transition-all"
+                                style={{
+                                    background: tab === t ? "#38bdf8" : "transparent",
+                                    color: tab === t ? "#000" : "#64748b",
+                                }}>
+                                <Icon className="w-3 h-3" /> {lbl}
+                            </button>
+                        ))}
+                    </div>
+                    <button onClick={downloadCSV} title="Download CSV"
+                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono rounded transition-colors"
+                        style={{ background: "rgba(56,189,248,0.08)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.2)" }}>
+                        <Download className="w-3 h-3" /> CSV
+                    </button>
+                    <button onClick={downloadJSON} title="Download JSON"
+                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono rounded transition-colors"
+                        style={{ background: "rgba(56,189,248,0.08)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.2)" }}>
+                        <Download className="w-3 h-3" /> JSON
+                    </button>
+                    <button onClick={onClose}
+                        className="p-1 rounded transition-colors hover:bg-white/5"
+                        style={{ color: "#64748b" }}>
+                        <X className="w-3.5 h-3.5" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Error state */}
+            {job.status === "failed" && job.error_message && (
+                <div className="px-4 py-3 text-xs font-mono" style={{ background: "rgba(239,68,68,0.07)", borderBottom: "1px solid rgba(239,68,68,0.2)", color: "#f87171" }}>
+                    <span className="font-semibold">Error: </span>{job.error_message}
+                </div>
+            )}
+
+            {/* Content */}
+            <div className="p-4">
+                {tab === "table" ? (
+                    <ExcelTable rows={job.extracted_rows} />
+                ) : (
+                    <pre className="text-[10px] font-mono overflow-auto max-h-80 leading-relaxed"
+                        style={{ color: "#94a3b8", whiteSpace: "pre-wrap" }}>
+                        {JSON.stringify(job.extracted_raw, null, 2)}
+                    </pre>
+                )}
+            </div>
+
+            {/* Timing footer */}
+            <div className="px-4 py-2 flex items-center gap-4 text-[9px] font-mono"
+                style={{ borderTop: "1px solid #1e3a5f", color: "#334155" }}>
+                <span>Started: {job.started_at || "—"}</span>
+                <span>Finished: {job.completed_at || "—"}</span>
+                {job.duration_seconds && <span>Duration: {job.duration_seconds}s</span>}
+                {job.engine_used && <span>Engine: {job.engine_used}</span>}
+            </div>
+        </motion.div>
+    );
+}
+
+// ── Batch Row ─────────────────────────────────────────────────────────────────
+function BatchRow({ batch, onDelete, onRerun }: {
+    batch: Batch;
+    onDelete: (id: string) => void;
+    onRerun: (id: string) => void;
+}) {
+    const [expanded, setExpanded] = useState(false);
+    const [detail, setDetail] = useState<Batch | null>(null);
+    const [loadingDetail, setLoadingDetail] = useState(false);
+    const [selectedJob, setSelectedJob] = useState<JobDetail | null>(null);
+    const [rerunning, setRerunning] = useState(false);
+
+    const loadDetail = async () => {
+        if (detail) { setExpanded(!expanded); return; }
+        setLoadingDetail(true);
+        try {
+            const res = await fetch(`/api/v1/database/${batch.batch_id}`);
+            const json = await res.json();
+            setDetail(json.data);
+            setExpanded(true);
+        } catch { } finally { setLoadingDetail(false); }
+    };
+
+    const handleRerun = async () => {
+        setRerunning(true);
+        await onRerun(batch.batch_id);
+        setRerunning(false);
+    };
+
+    const downloadAllCSV = () => {
+        if (!detail?.jobs?.length) return;
+        const allRows = detail.jobs.flatMap(j =>
+            j.extracted_rows.map(r => ({ __filename: j.filename, ...r }))
+        );
+        if (!allRows.length) return;
+        const cols = Array.from(new Set(allRows.flatMap(r => Object.keys(r))));
+        const lines = [
+            cols.join(","),
+            ...allRows.map(row => cols.map(c => `"${String(row[c] ?? "").replace(/"/g, '""')}"`).join(",")),
+        ];
+        const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+        a.download = `batch_${batch.batch_id.slice(0, 8)}_all.csv`; a.click();
+    };
+
+    return (
+        <div className="rounded-xl overflow-hidden transition-all"
+            style={{ border: "1px solid #1e3a5f", background: "#071a2e" }}>
+
+            {/* Summary row */}
+            <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/[0.02] transition-colors"
+                onClick={loadDetail}>
+                <span style={{ color: "#334155", flexShrink: 0 }}>
+                    {loadingDetail
+                        ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: "#38bdf8" }} />
+                        : expanded
+                            ? <ChevronDown className="w-4 h-4" />
+                            : <ChevronRight className="w-4 h-4" />
+                    }
+                </span>
+
+                <StatusBadge status={batch.status} />
+
+                {/* Date + time */}
+                <div className="w-32 flex-shrink-0">
+                    <p className="text-[11px] font-mono" style={{ color: "#e2e8f0" }}>
+                        {batch.created_at?.slice(0, 10)}
+                    </p>
+                    <p className="text-[9px] font-mono" style={{ color: "#475569" }}>
+                        {batch.created_at?.slice(11)}
+                    </p>
+                </div>
+
+                {/* Doc count */}
+                <div className="flex-shrink-0 text-center w-20">
+                    <p className="text-sm font-bold" style={{ color: "#38bdf8" }}>{batch.document_count}</p>
+                    <p className="text-[9px] font-mono uppercase" style={{ color: "#475569" }}>docs</p>
+                </div>
+
+                {/* Schema */}
+                <div className="min-w-0 w-36">
+                    <p className="text-[9px] font-mono uppercase" style={{ color: "#334155" }}>Schema</p>
+                    <p className="text-xs truncate" style={{ color: "#94a3b8" }}>
+                        {batch.schema_name || <span style={{ color: "#334155", fontStyle: "italic" }}>none</span>}
+                    </p>
+                </div>
+
+                {/* Session */}
+                <div className="hidden md:block min-w-0 w-32">
+                    <p className="text-[9px] font-mono uppercase" style={{ color: "#334155" }}>Session</p>
+                    <p className="text-xs truncate capitalize" style={{ color: "#94a3b8" }}>
+                        {batch.session.mode} · {batch.session.provider}
+                    </p>
+                </div>
+
+                {/* Results bar */}
+                <div className="hidden lg:flex items-center gap-2 flex-1">
+                    {batch.completed_count > 0 && (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded"
+                            style={{ background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.2)" }}>
+                            {batch.completed_count} ✓
+                        </span>
+                    )}
+                    {batch.failed_count > 0 && (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded"
+                            style={{ background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
+                            {batch.failed_count} ✗
+                        </span>
+                    )}
+                    {batch.duration_seconds && (
+                        <span className="text-[9px] font-mono" style={{ color: "#334155" }}>
+                            {batch.duration_seconds}s
+                        </span>
+                    )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-0.5 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                    {detail && (
+                        <button onClick={downloadAllCSV} title="Download all as CSV"
+                            className="p-1.5 rounded-lg transition-colors hover:bg-white/5"
+                            style={{ color: "#475569" }}>
+                            <Download className="w-4 h-4" />
+                        </button>
+                    )}
+                    <button onClick={handleRerun} disabled={rerunning || batch.status === "running"} title="Re-run"
+                        className="p-1.5 rounded-lg transition-colors hover:bg-white/5"
+                        style={{ color: "#475569" }}>
+                        {rerunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                    </button>
+                    <button onClick={() => onDelete(batch.batch_id)} title="Delete"
+                        className="p-1.5 rounded-lg transition-colors hover:bg-red-500/10"
+                        style={{ color: "#475569" }}>
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Expanded detail */}
+            <AnimatePresence>
+                {expanded && detail && (
+                    <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        style={{ borderTop: "1px solid #1e3a5f" }}>
+                        <div className="px-4 py-4">
+
+                            {/* Batch meta strip */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                                {[
+                                    { label: "Batch ID", value: detail.batch_id.slice(0, 16) + "…" },
+                                    { label: "Session ID", value: detail.session.session_id.slice(0, 16) + "…" },
+                                    { label: "Started", value: detail.started_at || "—" },
+                                    { label: "Completed", value: detail.completed_at || "—" },
+                                ].map(m => (
+                                    <div key={m.label} className="px-3 py-2 rounded-lg"
+                                        style={{ background: "#0a2038", border: "1px solid #1e3a5f" }}>
+                                        <p className="text-[9px] font-mono uppercase mb-0.5" style={{ color: "#334155" }}>{m.label}</p>
+                                        <p className="text-[10px] font-mono truncate" style={{ color: "#94a3b8" }}>{m.value}</p>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* Documents table — choose which doc's result to view */}
+                            <div className="mb-4">
+                                <p className="text-[10px] font-mono uppercase mb-2" style={{ color: "#38bdf8", letterSpacing: "0.15em" }}>
+                                    Documents ({detail.jobs?.length || 0})
+                                </p>
+                                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid #1e3a5f" }}>
+                                    <table className="w-full text-xs">
+                                        <thead>
+                                            <tr style={{ background: "#0c2340" }}>
+                                                {["#", "Document", "Status", "Records", "Fields", "Duration", "Action"].map(h => (
+                                                    <th key={h} className="px-3 py-2 text-left font-mono font-semibold"
+                                                        style={{ color: "#38bdf8", borderBottom: "1px solid #1e3a5f" }}>
+                                                        {h}
+                                                    </th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(detail.jobs || []).map((job, i) => {
+                                                const isSelected = selectedJob?.job_id === job.job_id;
+                                                return (
+                                                    <tr key={job.job_id}
+                                                        style={{
+                                                            background: isSelected
+                                                                ? "rgba(56,189,248,0.06)"
+                                                                : i % 2 === 0 ? "#071a2e" : "#0a2038",
+                                                            borderLeft: isSelected ? "2px solid #38bdf8" : "2px solid transparent",
+                                                        }}>
+                                                        <td className="px-3 py-2 font-mono" style={{ color: "#475569", borderBottom: "1px solid #1e3a5f" }}>
+                                                            {i + 1}
+                                                        </td>
+                                                        <td className="px-3 py-2 max-w-[200px]" style={{ borderBottom: "1px solid #1e3a5f" }}>
+                                                            <p className="text-xs font-medium truncate" style={{ color: "#e2e8f0" }} title={job.filename}>
+                                                                {job.filename}
+                                                            </p>
+                                                            <p className="text-[9px] font-mono" style={{ color: "#334155" }}>
+                                                                {job.job_id.slice(0, 10)}…
+                                                            </p>
+                                                        </td>
+                                                        <td className="px-3 py-2" style={{ borderBottom: "1px solid #1e3a5f" }}>
+                                                            <StatusBadge status={job.status} />
+                                                        </td>
+                                                        <td className="px-3 py-2 font-mono text-center" style={{ color: "#94a3b8", borderBottom: "1px solid #1e3a5f" }}>
+                                                            {job.row_count || "—"}
+                                                        </td>
+                                                        <td className="px-3 py-2 font-mono text-center" style={{ color: "#94a3b8", borderBottom: "1px solid #1e3a5f" }}>
+                                                            {job.field_count || "—"}
+                                                        </td>
+                                                        <td className="px-3 py-2 font-mono" style={{ color: "#475569", borderBottom: "1px solid #1e3a5f" }}>
+                                                            {job.duration_seconds ? `${job.duration_seconds}s` : "—"}
+                                                        </td>
+                                                        <td className="px-3 py-2" style={{ borderBottom: "1px solid #1e3a5f" }}>
+                                                            <button
+                                                                onClick={() => setSelectedJob(isSelected ? null : job)}
+                                                                className="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-mono transition-all"
+                                                                style={isSelected
+                                                                    ? { background: "#38bdf8", color: "#000" }
+                                                                    : { background: "rgba(56,189,248,0.08)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.2)" }
+                                                                }>
+                                                                <Eye className="w-3 h-3" />
+                                                                {isSelected ? "Hide" : "View"}
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            {/* Result panel for selected doc */}
+                            <AnimatePresence>
+                                {selectedJob && (
+                                    <DocResultPanel
+                                        key={selectedJob.job_id}
+                                        job={selectedJob}
+                                        onClose={() => setSelectedJob(null)}
+                                    />
+                                )}
+                            </AnimatePresence>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </div>
+    );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
 export default function DatabasePage() {
     const { toast } = useToast();
-
-    const [records, setRecords] = useState<DbRecord[]>([]);
+    const [batches, setBatches] = useState<Batch[]>([]);
     const [stats, setStats] = useState<Stats | null>(null);
     const [loading, setLoading] = useState(true);
-    const [filter, setFilter] = useState<string>("all");
+    const [filter, setFilter] = useState("all");
     const [page, setPage] = useState(1);
     const [total, setTotal] = useState(0);
-    const PAGE_SIZE = 30;
+    const PAGE_SIZE = 20;
 
-    const [viewingRecord, setViewingRecord] = useState<any | null>(null);
-    const [viewLoading, setViewLoading] = useState(false);
-
-    const [rerunning, setRerunning] = useState<string | null>(null);
-    const [expanded, setExpanded] = useState<Set<string>>(new Set());
-
-    // ── Fetch ──────────────────────────────────────────────────────────────────
-    const fetchRecords = useCallback(async () => {
+    const fetchBatches = useCallback(async () => {
         setLoading(true);
         try {
-            const params = new URLSearchParams({
-                page: String(page),
-                page_size: String(PAGE_SIZE),
-            });
+            const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
             if (filter !== "all") params.append("status", filter);
-
             const res = await fetch(`/api/v1/database?${params}`);
             const json = await res.json();
-            const data = json.data || {};
-            setRecords(data.items || []);
-            setStats(data.stats || null);
-            setTotal(data.total || 0);
+            const d = json.data || {};
+            setBatches(d.items || []);
+            setStats(d.stats || null);
+            setTotal(d.total || 0);
         } catch (e: any) {
-            toast({ title: "Failed to load records", description: e.message, variant: "destructive" });
+            toast({ title: "Failed to load", description: e.message, variant: "destructive" });
         } finally {
             setLoading(false);
         }
     }, [filter, page]);
 
-    useEffect(() => { fetchRecords(); }, [fetchRecords]);
+    useEffect(() => { fetchBatches(); }, [fetchBatches]);
 
-    // Auto-refresh if any record is running
+    // Auto-refresh when any batch is still running
     useEffect(() => {
-        const hasRunning = records.some(r => r.status === "running");
-        if (!hasRunning) return;
-        const id = setInterval(fetchRecords, 3000);
+        if (!batches.some(b => b.status === "running")) return;
+        const id = setInterval(fetchBatches, 3000);
         return () => clearInterval(id);
-    }, [records, fetchRecords]);
+    }, [batches, fetchBatches]);
 
-    // ── View result ────────────────────────────────────────────────────────────
-    const viewResult = async (jobId: string) => {
-        setViewLoading(true);
+    const deleteBatch = async (batchId: string) => {
+        if (!confirm("Delete this extraction record and all its results?")) return;
         try {
-            const res = await fetch(`/api/v1/database/${jobId}`);
-            const json = await res.json();
-            setViewingRecord(json.data || {});
-        } catch (e: any) {
-            toast({ title: "Failed to load result", description: e.message, variant: "destructive" });
-        } finally {
-            setViewLoading(false);
-        }
-    };
-
-    // ── Rerun ──────────────────────────────────────────────────────────────────
-    const rerun = async (jobId: string, filename: string) => {
-        setRerunning(jobId);
-        try {
-            const res = await fetch(`/api/v1/database/${jobId}/rerun`, { method: "POST" });
-            const json = await res.json();
-            if (!res.ok) throw new Error(json.detail || "Rerun failed");
-            toast({ title: "Rerun started", description: `New job: ${json.data?.new_job_id?.slice(0, 12)}…` });
-            await fetchRecords();
-        } catch (e: any) {
-            toast({ title: "Rerun failed", description: e.message, variant: "destructive" });
-        } finally {
-            setRerunning(null);
-        }
-    };
-
-    // ── Delete ─────────────────────────────────────────────────────────────────
-    const deleteRecord = async (jobId: string) => {
-        if (!confirm("Delete this extraction record?")) return;
-        try {
-            await fetch(`/api/v1/extraction/jobs/${jobId}`, { method: "DELETE" });
-            setRecords(prev => prev.filter(r => r.job_id !== jobId));
-            toast({ title: "Record deleted" });
+            await fetch(`/api/v1/database/${batchId}`, { method: "DELETE" });
+            setBatches(prev => prev.filter(b => b.batch_id !== batchId));
+            toast({ title: "Deleted" });
         } catch (e: any) {
             toast({ title: "Delete failed", description: e.message, variant: "destructive" });
         }
     };
 
-    // ── Download ───────────────────────────────────────────────────────────────
-    const downloadResult = async (jobId: string, filename: string) => {
+    const rerunBatch = async (batchId: string) => {
         try {
-            const res = await fetch(`/api/v1/database/${jobId}`);
+            const res = await fetch(`/api/v1/database/${batchId}/rerun`, { method: "POST" });
             const json = await res.json();
-            const data = json.data?.result_data || {};
-            const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-            const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
-            a.download = `extraction_${filename.replace(/\s/g, "_")}_${jobId.slice(0, 8)}.json`;
-            a.click();
+            if (!res.ok) throw new Error(json.detail || "Rerun failed");
+            toast({ title: "Re-run started", description: `New batch: ${json.data?.new_batch_id?.slice(0, 12)}…` });
+            await fetchBatches();
         } catch (e: any) {
-            toast({ title: "Download failed", description: e.message, variant: "destructive" });
+            toast({ title: "Re-run failed", description: e.message, variant: "destructive" });
         }
     };
 
-    const toggleExpand = (id: string) =>
-        setExpanded(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
-
     const totalPages = Math.ceil(total / PAGE_SIZE);
 
-    // ── Render ────────────────────────────────────────────────────────────────
     return (
-        <div className="relative z-10 pt-[52px] min-h-screen">
+        <div className="relative z-10 pt-[52px] min-h-screen" style={{ background: "#050f1e" }}>
             <div className="max-w-7xl mx-auto px-5 py-8">
 
-                {/* ── Header ──────────────────────────────────────────────────────── */}
+                {/* Header */}
                 <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="mb-7">
                     <div className="flex items-center gap-2 mb-2">
-                        <span className="w-1 h-1 rounded-full bg-primary animate-pulse-glow" />
-                        <span className="section-label">Extraction Records</span>
+                        <span className="w-1.5 h-1.5 rounded-full animate-pulse-glow" style={{ background: "#38bdf8" }} />
+                        <span className="text-[10px] uppercase tracking-[0.22em] font-mono" style={{ color: "#38bdf8" }}>
+                            Extraction Records
+                        </span>
                     </div>
                     <div className="flex items-start justify-between gap-4 flex-wrap">
                         <div>
-                            <h1 className="text-3xl font-display font-bold text-foreground">Database</h1>
-                            <p className="text-sm text-muted-foreground mt-1">
-                                Every extraction run — with full document, schema, result, and timing details
+                            <h1 className="text-3xl font-display font-bold" style={{
+                                background: "linear-gradient(135deg, #38bdf8, #818cf8)",
+                                WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+                            }}>
+                                Database
+                            </h1>
+                            <p className="text-sm mt-1" style={{ color: "#475569" }}>
+                                One record per extraction run — all documents, results, and history
                             </p>
                         </div>
-                        <button onClick={fetchRecords} className="btn btn-ghost btn-sm mt-1">
-                            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                        <button onClick={fetchBatches}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+                            style={{ background: "rgba(56,189,248,0.08)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.2)" }}>
+                            <RefreshCw className="w-4 h-4" /> Refresh
                         </button>
                     </div>
-                    <div className="divider mt-4" />
+                    <div className="mt-4 h-px" style={{ background: "linear-gradient(90deg, transparent, #1e3a5f, rgba(56,189,248,0.3), #1e3a5f, transparent)" }} />
                 </motion.div>
 
-                {/* ── Stats bar ───────────────────────────────────────────────────── */}
+                {/* Stats */}
                 {stats && (
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
                         {[
-                            { label: "Total Runs", value: stats.total, color: "text-foreground" },
-                            { label: "Completed", value: stats.completed, color: "text-emerald-600" },
-                            { label: "Failed", value: stats.failed, color: "text-red-500" },
-                            { label: "Running", value: stats.running, color: "text-sky-500" },
-                            { label: "Pending", value: stats.pending, color: "text-amber-500" },
+                            { label: "Total Runs", val: stats.total, color: "#e2e8f0" },
+                            { label: "Completed", val: stats.completed, color: "#10b981" },
+                            { label: "Partial", val: stats.partial, color: "#f59e0b" },
+                            { label: "Failed", val: stats.failed, color: "#ef4444" },
+                            { label: "Running", val: stats.running, color: "#38bdf8" },
                         ].map(s => (
-                            <div key={s.label} className="glass-robot p-3.5 text-center">
-                                <p className={`text-2xl font-display font-bold ${s.color}`}>{s.value}</p>
-                                <p className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mt-0.5">{s.label}</p>
+                            <div key={s.label} className="rounded-xl p-4 text-center"
+                                style={{ background: "#071a2e", border: "1px solid #1e3a5f" }}>
+                                <p className="text-2xl font-display font-bold" style={{ color: s.color }}>{s.val}</p>
+                                <p className="text-[10px] font-mono uppercase tracking-wider mt-0.5" style={{ color: "#334155" }}>
+                                    {s.label}
+                                </p>
                             </div>
                         ))}
                     </div>
                 )}
 
-                {/* ── Filter toolbar ───────────────────────────────────────────────── */}
+                {/* Filter */}
                 <div className="flex items-center gap-2 mb-5 flex-wrap">
-                    <Filter className="w-3.5 h-3.5 text-muted-foreground" />
-                    {["all", "completed", "failed", "running", "pending"].map(f => (
+                    <Filter className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#475569" }} />
+                    {["all", "completed", "partial", "failed", "running"].map(f => (
                         <button key={f} onClick={() => { setFilter(f); setPage(1); }}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all capitalize ${filter === f
-                                    ? "bg-primary text-white"
-                                    : "glass-robot text-muted-foreground hover:text-foreground"
-                                }`}>
+                            className="px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all"
+                            style={filter === f
+                                ? { background: "#38bdf8", color: "#000" }
+                                : { background: "rgba(56,189,248,0.06)", color: "#475569", border: "1px solid #1e3a5f" }
+                            }>
                             {f}
                         </button>
                     ))}
-                    <span className="ml-auto text-[11px] font-mono text-muted-foreground">{total} records</span>
+                    <span className="ml-auto text-[10px] font-mono" style={{ color: "#334155" }}>
+                        {total} {total === 1 ? "record" : "records"}
+                    </span>
                 </div>
 
-                {/* ── Table ───────────────────────────────────────────────────────── */}
+                {/* Records list */}
                 {loading ? (
-                    <div className="flex items-center justify-center py-20">
-                        <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                    <div className="flex items-center justify-center py-24">
+                        <Loader2 className="w-8 h-8 animate-spin" style={{ color: "#38bdf8" }} />
                     </div>
-                ) : records.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-20 text-center">
-                        <Database className="w-12 h-12 text-primary/20 mb-3" />
-                        <p className="text-base font-semibold text-foreground">No extraction records yet</p>
-                        <p className="text-sm text-muted-foreground mt-1">Run an extraction to see records here</p>
+                ) : batches.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-24 text-center">
+                        <Database className="w-14 h-14 mb-4" style={{ color: "rgba(56,189,248,0.2)" }} />
+                        <p className="text-base font-semibold" style={{ color: "#e2e8f0" }}>No extraction records yet</p>
+                        <p className="text-sm mt-1" style={{ color: "#475569" }}>Run an extraction to see records here</p>
                     </div>
                 ) : (
                     <div className="space-y-2">
-                        {records.map((rec, idx) => {
-                            const isExpanded = expanded.has(rec.job_id);
-                            const isRerunning = rerunning === rec.job_id;
-
-                            return (
-                                <motion.div
-                                    key={rec.job_id}
-                                    initial={{ opacity: 0, y: 6 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ delay: idx * 0.015 }}
-                                    className="rounded-xl overflow-hidden"
-                                    style={{ border: "1px solid hsl(var(--border))", background: "white" }}
-                                >
-                                    {/* ── Row ─────────────────────────────────────────────── */}
-                                    <div className="flex items-center gap-3 px-4 py-3">
-
-                                        {/* Expand toggle */}
-                                        <button onClick={() => toggleExpand(rec.job_id)}
-                                            className="text-muted-foreground hover:text-foreground flex-shrink-0">
-                                            {isExpanded
-                                                ? <ChevronDown className="w-4 h-4" />
-                                                : <ChevronRight className="w-4 h-4" />
-                                            }
-                                        </button>
-
-                                        {/* Status */}
-                                        <StatusChip status={rec.status} />
-
-                                        {/* Document */}
-                                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                                            <FileText className="w-3.5 h-3.5 text-primary/60 flex-shrink-0" />
-                                            <div className="min-w-0">
-                                                <p className="text-sm font-medium text-foreground truncate max-w-[200px]">
-                                                    {rec.document.filename}
-                                                </p>
-                                                <p className="text-[9px] font-mono text-muted-foreground">
-                                                    {rec.job_id.slice(0, 12)}…
-                                                </p>
-                                            </div>
-                                        </div>
-
-                                        {/* Schema */}
-                                        <div className="hidden md:block min-w-0 w-36">
-                                            <p className="text-[10px] text-muted-foreground font-mono">Schema</p>
-                                            <p className="text-xs text-foreground truncate">
-                                                {rec.schema.schema_name || <span className="text-muted-foreground italic">none</span>}
-                                            </p>
-                                        </div>
-
-                                        {/* Session */}
-                                        <div className="hidden lg:block w-28">
-                                            <p className="text-[10px] text-muted-foreground font-mono">Mode</p>
-                                            <p className="text-xs text-foreground capitalize">
-                                                {rec.session.mode || "—"} / {rec.session.provider || "—"}
-                                            </p>
-                                        </div>
-
-                                        {/* Engine */}
-                                        <div className="hidden lg:block w-28">
-                                            <p className="text-[10px] text-muted-foreground font-mono">Engine</p>
-                                            <p className="text-xs text-foreground">{rec.engine_used || "—"}</p>
-                                        </div>
-
-                                        {/* Fields extracted */}
-                                        <div className="hidden sm:block w-16 text-center">
-                                            <p className="text-[10px] text-muted-foreground font-mono">Fields</p>
-                                            <p className={`text-sm font-bold ${rec.field_count > 0 ? "text-emerald-600" : "text-muted-foreground"}`}>
-                                                {rec.field_count}
-                                            </p>
-                                        </div>
-
-                                        {/* Date / Time */}
-                                        <div className="hidden md:block w-32 text-right">
-                                            <p className="text-[10px] font-mono text-muted-foreground">
-                                                {rec.created_at ? rec.created_at.replace(" UTC", "") : "—"}
-                                            </p>
-                                            {rec.duration_seconds && (
-                                                <p className="text-[9px] font-mono text-muted-foreground/60">
-                                                    {rec.duration_seconds}s
-                                                </p>
-                                            )}
-                                        </div>
-
-                                        {/* Actions */}
-                                        <div className="flex items-center gap-0.5 flex-shrink-0">
-                                            {rec.status === "completed" && (
-                                                <>
-                                                    <button onClick={() => viewResult(rec.job_id)} title="View Result"
-                                                        className="p-1.5 rounded-lg hover:bg-primary/8 text-muted-foreground hover:text-primary transition-colors">
-                                                        <Eye className="w-4 h-4" />
-                                                    </button>
-                                                    <button onClick={() => downloadResult(rec.job_id, rec.document.filename)} title="Download JSON"
-                                                        className="p-1.5 rounded-lg hover:bg-primary/8 text-muted-foreground hover:text-primary transition-colors">
-                                                        <Download className="w-4 h-4" />
-                                                    </button>
-                                                </>
-                                            )}
-                                            <button onClick={() => rerun(rec.job_id, rec.document.filename)} title="Re-run extraction"
-                                                disabled={isRerunning || rec.status === "running"}
-                                                className="p-1.5 rounded-lg hover:bg-sky-500/10 text-muted-foreground hover:text-sky-600 transition-colors disabled:opacity-40">
-                                                {isRerunning
-                                                    ? <Loader2 className="w-4 h-4 animate-spin" />
-                                                    : <RotateCcw className="w-4 h-4" />
-                                                }
-                                            </button>
-                                            <button onClick={() => deleteRecord(rec.job_id)} title="Delete"
-                                                className="p-1.5 rounded-lg hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors">
-                                                <Trash2 className="w-4 h-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {/* ── Expanded detail row ──────────────────────────────── */}
-                                    <AnimatePresence>
-                                        {isExpanded && (
-                                            <motion.div
-                                                initial={{ height: 0, opacity: 0 }}
-                                                animate={{ height: "auto", opacity: 1 }}
-                                                exit={{ height: 0, opacity: 0 }}
-                                                transition={{ duration: 0.18 }}
-                                                style={{ borderTop: "1px solid hsl(var(--border))", background: "hsl(var(--muted) / 0.3)" }}
-                                            >
-                                                <div className="px-4 py-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-
-                                                    {/* Document details */}
-                                                    <div>
-                                                        <p className="section-label mb-1.5">Document</p>
-                                                        <p className="text-xs font-medium text-foreground">{rec.document.filename}</p>
-                                                        <p className="text-[10px] font-mono text-muted-foreground mt-0.5 break-all">{rec.document.document_id}</p>
-                                                        <p className="text-[10px] text-muted-foreground mt-0.5">{rec.document.content_type || "—"}</p>
-                                                        <p className="text-[10px] text-muted-foreground">Uploaded: {rec.document.uploaded_at || "—"}</p>
-                                                    </div>
-
-                                                    {/* Schema details */}
-                                                    <div>
-                                                        <p className="section-label mb-1.5">Schema</p>
-                                                        <p className="text-xs font-medium text-foreground">{rec.schema.schema_name || "None (auto)"}</p>
-                                                        {rec.schema.schema_id && (
-                                                            <p className="text-[10px] font-mono text-muted-foreground mt-0.5 break-all">{rec.schema.schema_id}</p>
-                                                        )}
-                                                    </div>
-
-                                                    {/* Session details */}
-                                                    <div>
-                                                        <p className="section-label mb-1.5">Session</p>
-                                                        <p className="text-xs font-medium text-foreground capitalize">
-                                                            {rec.session.mode || "—"} · {rec.session.provider || "—"}
-                                                        </p>
-                                                        <p className="text-[10px] font-mono text-muted-foreground mt-0.5 break-all">{rec.session.session_id}</p>
-                                                    </div>
-
-                                                    {/* Timing details */}
-                                                    <div>
-                                                        <p className="section-label mb-1.5">Timing</p>
-                                                        <div className="space-y-0.5 text-[10px] font-mono text-muted-foreground">
-                                                            <p>Created: {rec.created_at || "—"}</p>
-                                                            <p>Started: {rec.started_at || "—"}</p>
-                                                            <p>Finished: {rec.completed_at || "—"}</p>
-                                                            <p>Duration: {rec.duration_seconds ? `${rec.duration_seconds}s` : "—"}</p>
-                                                            <p>Engine: {rec.engine_used || "—"}</p>
-                                                            <p>Fields extracted: {rec.field_count}</p>
-                                                        </div>
-                                                    </div>
-
-                                                    {/* Error message for failed jobs */}
-                                                    {rec.status === "failed" && rec.error_message && (
-                                                        <div className="sm:col-span-2 lg:col-span-4">
-                                                            <p className="section-label mb-1.5 text-red-500">Error</p>
-                                                            <div className="p-3 rounded-lg text-xs font-mono text-red-700 break-all"
-                                                                style={{ background: "hsl(0 62% 46% / 0.06)", border: "1px solid hsl(0 62% 46% / 0.18)" }}>
-                                                                {rec.error_message}
-                                                            </div>
-                                                            <button
-                                                                onClick={() => rerun(rec.job_id, rec.document.filename)}
-                                                                disabled={isRerunning}
-                                                                className="btn btn-primary btn-sm mt-3">
-                                                                {isRerunning
-                                                                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Re-running…</>
-                                                                    : <><Play className="w-3.5 h-3.5" /> Re-run from Scratch</>
-                                                                }
-                                                            </button>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </motion.div>
-                                        )}
-                                    </AnimatePresence>
-                                </motion.div>
-                            );
-                        })}
+                        {batches.map((batch, idx) => (
+                            <motion.div key={batch.batch_id}
+                                initial={{ opacity: 0, y: 6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: idx * 0.03 }}>
+                                <BatchRow
+                                    batch={batch}
+                                    onDelete={deleteBatch}
+                                    onRerun={rerunBatch}
+                                />
+                            </motion.div>
+                        ))}
                     </div>
                 )}
 
-                {/* ── Pagination ───────────────────────────────────────────────────── */}
+                {/* Pagination */}
                 {totalPages > 1 && (
                     <div className="flex items-center justify-center gap-2 mt-6">
                         <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-                            className="btn btn-ghost btn-sm">← Prev</button>
-                        <span className="text-sm font-mono text-muted-foreground">
+                            className="px-4 py-2 rounded-lg text-xs font-mono transition-all disabled:opacity-40"
+                            style={{ background: "rgba(56,189,248,0.08)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.2)" }}>
+                            ← Prev
+                        </button>
+                        <span className="text-xs font-mono" style={{ color: "#475569" }}>
                             Page {page} of {totalPages}
                         </span>
                         <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-                            className="btn btn-ghost btn-sm">Next →</button>
+                            className="px-4 py-2 rounded-lg text-xs font-mono transition-all disabled:opacity-40"
+                            style={{ background: "rgba(56,189,248,0.08)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.2)" }}>
+                            Next →
+                        </button>
                     </div>
                 )}
             </div>
-
-            {/* ── Result viewer modal ──────────────────────────────────────────── */}
-            <AnimatePresence>
-                {(viewingRecord || viewLoading) && (
-                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-50 flex items-center justify-center p-4"
-                        style={{ background: "hsl(215 35% 12% / 0.6)", backdropFilter: "blur(8px)" }}
-                        onClick={() => setViewingRecord(null)}>
-                        <motion.div
-                            initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-                            className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl"
-                            style={{ border: "1px solid hsl(var(--border))" }}
-                            onClick={e => e.stopPropagation()}>
-
-                            {/* Modal header */}
-                            <div className="flex items-center justify-between px-5 py-3.5"
-                                style={{ borderBottom: "1px solid hsl(var(--border))" }}>
-                                <div className="flex items-center gap-2.5">
-                                    <Database className="w-4 h-4 text-primary" />
-                                    <span className="font-semibold text-foreground text-sm">
-                                        {viewingRecord?.document?.filename || "Extraction Result"}
-                                    </span>
-                                    {viewingRecord?.status && <StatusChip status={viewingRecord.status} />}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    {viewingRecord && (
-                                        <button
-                                            onClick={() => {
-                                                const blob = new Blob([JSON.stringify(viewingRecord.result_data || {}, null, 2)], { type: "application/json" });
-                                                const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-                                                a.download = `result_${viewingRecord.job_id?.slice(0, 8)}.json`; a.click();
-                                            }}
-                                            className="btn btn-primary btn-sm">
-                                            <Download className="w-3.5 h-3.5" /> Download
-                                        </button>
-                                    )}
-                                    <button onClick={() => setViewingRecord(null)}
-                                        className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50">
-                                        <X className="w-4 h-4" />
-                                    </button>
-                                </div>
-                            </div>
-
-                            {viewLoading ? (
-                                <div className="flex items-center justify-center flex-1 py-12">
-                                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                                </div>
-                            ) : viewingRecord ? (
-                                <div className="flex-1 overflow-auto">
-                                    {/* Meta strip */}
-                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-0 text-center"
-                                        style={{ borderBottom: "1px solid hsl(var(--border))" }}>
-                                        {[
-                                            { label: "Job ID", value: viewingRecord.job_id?.slice(0, 12) + "…" },
-                                            { label: "Engine", value: viewingRecord.engine_used || "—" },
-                                            { label: "Fields", value: viewingRecord.field_count ?? "—" },
-                                            { label: "Duration", value: viewingRecord.duration_seconds ? `${viewingRecord.duration_seconds}s` : "—" },
-                                        ].map(m => (
-                                            <div key={m.label} className="px-4 py-3" style={{ borderRight: "1px solid hsl(var(--border))" }}>
-                                                <p className="section-label">{m.label}</p>
-                                                <p className="text-sm font-mono font-medium text-foreground mt-0.5">{m.value}</p>
-                                            </div>
-                                        ))}
-                                    </div>
-
-                                    {/* Extracted fields */}
-                                    {viewingRecord.result_data?.data && (
-                                        <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(var(--border))" }}>
-                                            <p className="section-label mb-3">Extracted Fields</p>
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                {Object.entries(viewingRecord.result_data.data).map(([key, val]) => (
-                                                    <div key={key} className="p-3 rounded-lg"
-                                                        style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}>
-                                                        <p className="text-[9px] font-mono text-primary/60 uppercase tracking-wider mb-1">{key}</p>
-                                                        <p className="text-sm text-foreground font-mono break-all">
-                                                            {typeof val === "object" ? JSON.stringify(val) : String(val ?? "NULL")}
-                                                        </p>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Raw JSON */}
-                                    <details className="group">
-                                        <summary className="flex items-center gap-2 px-5 py-3 cursor-pointer text-[11px] font-mono text-muted-foreground hover:text-foreground">
-                                            <ChevronDown className="w-3 h-3 transition-transform group-open:rotate-180" />
-                                            Full JSON Response
-                                        </summary>
-                                        <div className="px-5 pb-5 max-h-80 overflow-auto">
-                                            <pre className="text-[10px] font-mono text-foreground/60 whitespace-pre-wrap leading-relaxed p-4 rounded-lg"
-                                                style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border))" }}>
-                                                {JSON.stringify(viewingRecord.result_data, null, 2)}
-                                            </pre>
-                                        </div>
-                                    </details>
-                                </div>
-                            ) : null}
-                        </motion.div>
-                    </motion.div>
-                )}
-            </AnimatePresence>
         </div>
     );
 }
